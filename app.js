@@ -40,10 +40,27 @@ const ui = {
   diaAlvo: null,  // dia usado pelas abas de modelos (dia selecionado na tela atual)
 };
 
-function toast(msg) {
+function toast(msg, acao) {
   const t = $('#toast');
-  t.textContent = msg; t.hidden = false;
-  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600);
+  t.textContent = msg;
+  if (acao) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'toast-acao'; b.textContent = acao.rotulo;
+    b.onclick = () => { t.hidden = true; acao.fn(); };
+    t.append(' ', b);
+  }
+  t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), acao ? 6000 : 2600);
+}
+
+/** Remove itens do histórico com opção de desfazer por alguns segundos. */
+function removerHistorico(chaves) {
+  if (!chaves.length) return;
+  const antes = store.snapshot();
+  store.removerDoHistorico(chaves);
+  vibrar(20);
+  toast(chaves.length === 1 ? 'Removida do histórico' : `${chaves.length} missões removidas do histórico`,
+    { rotulo: 'Desfazer', fn: () => { store.restaurar(antes); toast('Restaurado'); } });
 }
 function vibrar(ms = 15) { try { navigator.vibrate && navigator.vibrate(ms); } catch (e) {} }
 
@@ -67,9 +84,10 @@ function horario(it) {
   return t;
 }
 
+const svgLixo = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 const svgCheck = '<svg viewBox="0 0 24 24" fill="none" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"/></svg>';
 
-function cartao(it, agora, { mostrarDia = false } = {}) {
+function cartao(it, agora, { mostrarDia = false, remover = false } = {}) {
   const feito = it.status === 'concluida';
   const pulado = it.status === 'pulado';
   const atrasada = it.status === 'pendente' && fimEfetivo(it) < agora;
@@ -88,7 +106,8 @@ function cartao(it, agora, { mostrarDia = false } = {}) {
         ${it.escala?.oficial ? `<span class="it-m">Of. CPU: ${esc(it.escala.oficial)}</span>` : ''}
       </span>
     </button>
-    ${pulado ? '<span></span>' : `<button class="check" type="button" data-check="${esc(it.chave)}" role="checkbox" aria-checked="${feito}" aria-label="${feito ? 'Marcar como pendente' : 'Marcar como concluída'}">${svgCheck}</button>`}
+    <span class="acoes-it">${pulado ? '' : `<button class="check" type="button" data-check="${esc(it.chave)}" role="checkbox" aria-checked="${feito}" aria-label="${feito ? 'Marcar como pendente' : 'Marcar como concluída'}">${svgCheck}</button>`}${
+      remover ? `<button class="lixo" type="button" data-remover="${esc(it.chave)}" aria-label="Remover do histórico: ${esc(it.titulo)}">${svgLixo}</button>` : ''}</span>
   </div>`;
 }
 
@@ -242,6 +261,7 @@ function renderMissoes(agora) {
     const q = f.busca.trim().toLowerCase();
     lista = lista.filter((i) => (i.titulo + ' ' + (i.local || '') + ' ' + (i.obs || '')).toLowerCase().includes(q));
   }
+  const concluidas = f.status === 'concluida';
   // agrupa por dia
   const grupos = [];
   for (const it of lista) {
@@ -262,7 +282,11 @@ function renderMissoes(agora) {
       ${Object.keys(CATEGORIAS).map((c) => chip({ rotulo: CATEGORIAS[c].rotulo, cor: corCat(c), ativo: f.cat === c, dados: `data-mcat="${c}"`, peq: true })).join('')}
     </div>
     <div class="campo"><input type="search" id="m-busca" placeholder="Buscar por título, local ou observação" value="${esc(f.busca)}" aria-label="Buscar missões"></div>
-    ${grupos.length ? grupos.map((g) => `<div class="secao"><h2 class="lbl"${g.atras ? ' style="color:var(--danger)"' : ''}>${esc(g.k)}</h2>${g.itens.map((i) => cartao(i, agora, { mostrarDia: g.atras })).join('')}</div>`).join('')
+    ${concluidas && lista.length ? (ui.confirmarLimpar
+      ? `<div class="confirmar"><span>Remover ${lista.length === 1 ? 'a missão concluída' : `as ${lista.length} missões concluídas`}${f.cat !== 'todas' || f.busca.trim() ? ' deste filtro' : ''} do histórico?</span>
+          <button class="btn" type="button" data-acao="limpar-nao">Cancelar</button><button class="btn perigo" type="button" data-acao="limpar-sim" data-chaves="${esc(lista.map((i) => i.chave).join('|'))}">Remover</button></div>`
+      : `<div class="linha"><span class="it-m">${lista.length} concluída${lista.length === 1 ? '' : 's'}${f.cat !== 'todas' || f.busca.trim() ? ' neste filtro' : ''}</span><button class="btn perigo dir" type="button" data-acao="limpar-pedir">Limpar histórico</button></div>`) : ''}
+    ${grupos.length ? grupos.map((g) => `<div class="secao"><h2 class="lbl"${g.atras ? ' style="color:var(--danger)"' : ''}>${esc(g.k)}</h2>${g.itens.map((i) => cartao(i, agora, { mostrarDia: g.atras, remover: concluidas })).join('')}</div>`).join('')
       : `<div class="vazio">${f.status === 'pendente' ? 'Nenhuma missão pendente com esses filtros.' : 'Nenhuma missão concluída ainda.'}</div>`}
   </div>`;
 }
@@ -671,7 +695,8 @@ document.addEventListener('click', async (e) => {
   const md = t.closest('[data-modo]');
   if (md) { const v = md.dataset.modo; if (v === 'hoje') { ui.esc.ref = ui.esc.sel = inicioDoDia(Date.now()); } else { ui.esc.modo = v; ui.esc.ref = v === 'semana' ? ui.esc.sel : new Date(ui.esc.sel.getFullYear(), ui.esc.sel.getMonth(), 1); } renderizar(); return; }
   const cc = t.closest('[data-ciclo]'); if (cc) return abrirCiclo(cc.dataset.ciclo);
-  const ms = t.closest('[data-mstatus]'); if (ms) { ui.mis.status = ms.dataset.mstatus; renderizar(); return; }
+  const rm = t.closest('[data-remover]'); if (rm) { removerHistorico([rm.dataset.remover]); return; }
+  const ms = t.closest('[data-mstatus]'); if (ms) { ui.mis.status = ms.dataset.mstatus; ui.confirmarLimpar = false; renderizar(); return; }
   const mc = t.closest('[data-mcat]'); if (mc) { ui.mis.cat = mc.dataset.mcat; renderizar(); return; }
   const tm = t.closest('[data-tema]');
   if (tm) { store.setConfig({ tema: tm.dataset.tema }); aplicarTema(); return; }
@@ -680,6 +705,9 @@ document.addEventListener('click', async (e) => {
   switch (ac.dataset.acao) {
     case 'missao-no-dia': ui.diaAlvo = ui.esc.sel; abrirRapido(); break;
     case 'novo-ciclo': abrirCiclo(null); break;
+    case 'limpar-pedir': ui.confirmarLimpar = true; renderizar(); break;
+    case 'limpar-nao': ui.confirmarLimpar = false; renderizar(); break;
+    case 'limpar-sim': ui.confirmarLimpar = false; removerHistorico(ac.dataset.chaves.split('|').filter(Boolean)); break;
     case 'salvar-nome': store.setConfig({ nome: $('#aj-nome').value.trim() || 'Cadete' }); toast('Nome salvo'); break;
     case 'notificar': await pedirAvisos(); break;
     case 'instalar': if (ui.instalar) { ui.instalar.prompt(); await ui.instalar.userChoice.catch(() => {}); ui.instalar = null; renderizar(); } break;

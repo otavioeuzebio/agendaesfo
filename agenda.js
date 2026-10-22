@@ -26,6 +26,7 @@ export function plantoesDoCiclo(c, de, ate) {
     if (ini >= limite) break;
     if (ini + dur < de) continue;
     const exc = (c.excecoes || {})[ini];
+    if (exc?.tipo === 'arquivado') continue; // removido do histórico
     out.push({
       id: `ciclo:${c.id}:${ini}`,
       chave: `ciclo:${c.id}:${ini}`,

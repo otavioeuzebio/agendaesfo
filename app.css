@@ -99,9 +99,9 @@ main { max-width: 560px; margin: 0 auto; padding: 16px max(16px, env(safe-area-i
 .bloco-h small { font-size: .78rem; color: var(--muted); font-weight: 600; }
 
 /* cartão de item */
-.item { display: grid; grid-template-columns: 5px 1fr auto; align-items: stretch; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-height: 70px; }
+.item { display: grid; grid-template-columns: 5px minmax(0, 1fr) auto; align-items: stretch; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-height: 70px; }
 .item.atrasada { border-color: var(--danger); }
-.item.feito { opacity: .55; }
+.item.feito .corpo, .item.feito .faixa { opacity: .55; }
 .item.feito .it-t { text-decoration: line-through; }
 .item.pulado { opacity: .5; border-style: dashed; }
 .item.pulado .it-t { text-decoration: line-through; }
@@ -222,3 +222,11 @@ dialog.folha[open] { display: grid; grid-template-rows: auto 1fr; animation: sob
 .grupos-un { display: grid; gap: 10px; }
 .grupos-un .g { display: grid; gap: 6px; }
 .grupos-un .g > span { font-size: .78rem; font-weight: 700; color: var(--muted); }
+
+/* ações do cartão e remoção do histórico */
+.acoes-it { display: flex; align-items: center; gap: 6px; margin-right: 12px; align-self: center; }
+.acoes-it .check { margin-right: 0; }
+.lixo { width: 36px; height: 36px; border-radius: 10px; border: 1.5px solid var(--line); background: none; color: var(--danger); display: grid; place-items: center; padding: 0; }
+.lixo svg { width: 18px; height: 18px; }
+.toast { display: flex; align-items: center; gap: 12px; }
+.toast-acao { border: 0; background: none; color: var(--gold); font-weight: 800; padding: 4px 2px; text-transform: uppercase; letter-spacing: .04em; }

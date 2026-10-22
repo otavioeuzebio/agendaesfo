@@ -112,6 +112,21 @@ export const store = {
     gravar();
   },
 
+  /** Cópia do estado atual, usada para "Desfazer". */
+  snapshot() { return JSON.stringify(estado); },
+  restaurar(snap) { estado = JSON.parse(snap); gravar(); },
+  /** Tira do histórico: apaga missões concluídas e arquiva plantões de ciclo concluídos. */
+  removerDoHistorico(chaves) {
+    for (const k of chaves) {
+      if (k.startsWith('ciclo:')) {
+        const [, id, ini] = k.split(':');
+        const c = estado.ciclos.find((x) => x.id === id);
+        if (c) c.excecoes = { ...(c.excecoes || {}), [ini]: { tipo: 'arquivado' } };
+      } else estado.missoes = estado.missoes.filter((m) => m.id !== k);
+    }
+    gravar();
+  },
+
   exportar() { return JSON.stringify({ ...estado, exportadoEm: new Date().toISOString() }, null, 2); },
   importar(texto) {
     const dados = JSON.parse(texto);
