@@ -35,6 +35,21 @@ const DIAS_SEMANA = [
 ];
 const PALAVRAS_SUBTIPO = [
     [/\boficial de dia\b|\bof(\.)? dia\b/, 'oficial_dia'],
+    [/\bsobreaviso\b/, 'sobreaviso'],
+    [/\brespondente\b/, 'respondente'],
+    [/\b(cmt|comandante)\.? da guarda\b/, 'cmt_guarda'],
+    [/\b(cmt|comandante)\.? do bloco\b/, 'cmt_bloco3'],
+    [/\bdia[- ]a[- ]esfo\b/, 'dia_esfo'],
+    [/\brondante\b|\bpostos externos\b/, 'plantao_rondante'],
+    [/\bplantao do bloco\b|\bbloco iii\b|\bbloco 3\b/, 'plantao_bloco3'],
+    [/\bcafe dos instrutores\b|\bcafe\b/, 'cafe_instrutores'],
+    [/\bcopa\b/, 'copa'],
+    [/\bviaturas?\b|\bvtr\b/, 'viaturas_pm'],
+    [/\bcoordenacao\b|\bsubcomando\b|\bsalas? do comando\b/, 'salas_comando'],
+    [/\bbloco de salas\b|\bsalas de aula\b/, 'bloco_salas'],
+    [/\blavanderia\b/, 'lavanderia'],
+    [/\bmuseu\b/, 'museu_esfo'],
+    [/\bpredio adm\b|\bbloco adm\b|\bmanutencao\b/, 'manutencao_adm'],
     [/\bposto (ii|2)\b/, 'sentinela_posto2'],
     [/\bsentinela\b/, 'sentinela_guarda'],
     [/\bescala especial\b|\bespecial\b/, 'escala_especial'],
@@ -53,18 +68,20 @@ const TAG_CATEGORIA = {
     acad: 'academico', academico: 'academico', estudo: 'academico',
     adm: 'administrativo', administrativo: 'administrativo',
     pes: 'pessoal', pessoal: 'pessoal',
+    rot: 'rotina', rotina: 'rotina',
 };
 const SUBTIPO_PADRAO_DA_CATEGORIA = {
     operacional: 'escala_outro',
     academico: 'aula',
     administrativo: 'documento',
+    rotina: 'manutencao_adm',
     pessoal: 'pessoal',
 };
 function prioridadePadrao(subtipo) {
     const cat = SUBTIPOS[subtipo].categoria;
     if (cat === 'operacional' || subtipo === 'prova')
         return 'critico';
-    if (subtipo === 'trabalho' || subtipo === 'seminario' || subtipo === 'formatura')
+    if (subtipo === 'trabalho' || subtipo === 'seminario' || subtipo === 'formatura' || cat === 'rotina')
         return 'importante';
     return 'rotineiro';
 }

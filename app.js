@@ -11,10 +11,15 @@
  * Os dados vivem em store.js (localStorage). Toda gravação dispara
  * `renderizar()`, então a tela sempre reflete o que está salvo.
  */
-import { store, novoId, pedirArmazenamentoPersistente } from './store.js';
+import { store, novoId, pedirArmazenamentoPersistente, usarConta } from './store.js';
+import { iniciarPortao, sairDaConta } from './portao.js';
+import { listarAcessos, definirAcesso, removerAcesso, mensagemErro } from './acesso.js';
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo } from './agenda.js';
 import { gerarICS, baixar } from './ics.js';
-import { MODELOS, UNIDADES_CPU, crpmDa, horarioPadrao, proximoFimDeSemana } from './modelos.js';
+import { MODELOS, UNIDADES_CPU, crpmDa, horarioPadrao, proximoFimDeSemana, GRUPOS_SOBREAVISO, POSICOES_SALAS } from './modelos.js';
+
+/** Opções extras por tipo, gravadas em missao.detalhe. */
+const OPCOES_TIPO = { sobreaviso: { rotulo: 'Sobreaviso de', itens: GRUPOS_SOBREAVISO }, salas_comando: { rotulo: 'Sua posição na escala', itens: POSICOES_SALAS } };
 import { interpretarRapido } from './quickParse.js';
 import { CATEGORIAS, SUBTIPOS, PRIORIDADES, subtiposDe, SUBTIPOS_ESCALA, OPCOES_LEMBRETE, lembretesPadrao, rotuloAntecedencia } from './catalog.js';
 import { DIAS_CURTOS, MESES, inicioDoDia, somaDias, mesmoDia, hhmm, ddmm, rotuloDia, dataPorExtenso, contagem, BLOCOS, blocoDe, gradeDoMes, semanaDe } from './dates.js';
@@ -37,7 +42,10 @@ const ui = {
   esc: { modo: 'mes', ref: inicioDoDia(Date.now()), sel: inicioDoDia(Date.now()) },
   mis: { status: 'pendente', cat: 'todas', busca: '' },
   instalar: null, // evento beforeinstallprompt
-  diaAlvo: null,  // dia usado pelas abas de modelos (dia selecionado na tela atual)
+  diaAlvo: null,
+  conta: null,    // { email, uid, admin } quando há login
+  adm: null,      // lista de acessos carregada (administrador)
+  admErro: '',  // dia usado pelas abas de modelos (dia selecionado na tela atual)
 };
 
 function toast(msg, acao) {
@@ -104,6 +112,7 @@ function cartao(it, agora, { mostrarDia = false, remover = false } = {}) {
         ${pulado ? '<span class="pill" style="--pc:var(--muted)">Trocado / dispensado</span>' : ''}
         ${it.local ? `<span class="it-m">${esc(it.local)}</span>` : ''}
         ${it.escala?.oficial ? `<span class="it-m">Of. CPU: ${esc(it.escala.oficial)}</span>` : ''}
+        ${it.detalhe ? `<span class="it-m">${esc(it.detalhe)}</span>` : ''}
       </span>
     </button>
     <span class="acoes-it">${pulado ? '' : `<button class="check" type="button" data-check="${esc(it.chave)}" role="checkbox" aria-checked="${feito}" aria-label="${feito ? 'Marcar como pendente' : 'Marcar como concluída'}">${svgCheck}</button>`}${
@@ -159,6 +168,7 @@ function renderPainel(agora) {
     .filter((i) => SUBTIPOS_ESCALA.includes(i.subtipo)).flatMap((i) => [paraData(i.inicio)]));
 
   const avisos = [];
+  if (!store.get().config.nome) avisos.push(`<div class="aviso"><p>Coloque seu nome para aparecer no topo do app.</p><button class="btn" type="button" data-ir="ajustes">Pôr meu nome</button></div>`);
   if (ui.instalar) avisos.push(`<div class="aviso"><p>Instale o app na tela inicial para abrir como aplicativo e usar offline.</p><button class="btn ouro" type="button" data-acao="instalar">Instalar</button></div>`);
   if ('Notification' in window && Notification.permission === 'default' && store.get().missoes.length + store.get().ciclos.length > 0)
     avisos.push(`<div class="aviso"><p>Ative os avisos para receber lembretes enquanto o app estiver aberto.</p><button class="btn" type="button" data-acao="notificar">Ativar avisos</button></div>`);
@@ -233,7 +243,7 @@ function renderEscalas(agora) {
       <span class="dir it-m"><b style="color:var(--c-operacional)" class="num">${diasServico}</b> dia${diasServico === 1 ? '' : 's'} de serviço</span>
     </div>
     <div class="cal${e.modo === 'semana' ? ' semanal' : ''}">${DIAS_CURTOS.map((d) => `<span class="dow">${d}</span>`).join('')}${celulas}</div>
-    <div class="legenda"><span><i class="barra" style="--cor:var(--c-operacional)"></i>Serviço / estágio</span>${['academico', 'administrativo', 'pessoal'].map((c) => `<span><i style="--cor:${corCat(c)}"></i>${CATEGORIAS[c].rotulo}</span>`).join('')}</div>
+    <div class="legenda"><span><i class="barra" style="--cor:var(--c-operacional)"></i>Serviço / estágio</span>${['academico', 'rotina', 'administrativo', 'pessoal'].map((c) => `<span><i style="--cor:${corCat(c)}"></i>${CATEGORIAS[c].rotulo}</span>`).join('')}</div>
     <div class="secao"><h2 class="lbl">${esc(rotuloDia(e.sel.getTime(), agora))} <small>${doDia.length ? doDia.length + ' missão' + (doDia.length > 1 ? 'ões' : '') : 'livre'}</small></h2>
       ${doDia.map((i) => cartao(i, agora)).join('')}
       <button class="btn" type="button" data-acao="missao-no-dia">+ Missão neste dia</button>
@@ -318,11 +328,37 @@ function renderAjustes() {
       ${standalone ? '<p style="color:var(--ok);font-weight:650">Você já está usando o app instalado.</p>'
         : ui.instalar ? '<button class="btn ouro" type="button" data-acao="instalar">Instalar agora</button>'
         : '<p><b>Android (Chrome):</b> menu ⋮ → <i>Instalar app</i> ou <i>Adicionar à tela inicial</i>.<br><b>iPhone (Safari):</b> botão Compartilhar → <i>Adicionar à Tela de Início</i>.</p>'}</div>
+    ${ui.conta ? `<div class="ajuste"><h3>Conta</h3>
+      <p>Conectado como <b>${esc(ui.conta.email)}</b>${ui.conta.admin ? ' · administrador' : ''}. Sua agenda fica só neste aparelho e ninguém mais tem acesso a ela.</p>
+      <button class="btn" type="button" data-acao="sair-conta">Sair da conta</button></div>` : ''}
+    ${ui.conta?.admin ? renderAdmin() : ''}
     <p class="rodape">Agenda do Cadete · funciona offline · dados salvos no aparelho</p>
   </div>`;
 }
 
+function renderAdmin() {
+  const a = ui.adm;
+  const item = (email, botoes) => `<div class="adm-item"><span>${esc(email)}</span>${botoes.map(([acao, rot, cls]) => `<button class="btn ${cls || ''}" type="button" data-adm="${acao}" data-email="${esc(email)}">${rot}</button>`).join('')}</div>`;
+  const bloco = (titulo, lista, botoes, vazio) => `<div class="adm-sub">${titulo} (${lista.length})</div><div class="adm-lista">${lista.length ? lista.map((e) => item(e, botoes)).join('') : `<p>${vazio}</p>`}</div>`;
+  return `<div class="ajuste"><h3>Administração de acessos</h3>
+    <p>Você libera ou bloqueia quem pode usar o app. Aqui aparecem só os e-mails: as agendas ficam no aparelho de cada pessoa e você não tem acesso a elas.</p>
+    <div class="linha"><div class="campo" style="flex:1;min-width:200px"><input id="adm-email" type="email" inputmode="email" placeholder="e-mail para liberar" aria-label="E-mail para liberar"></div>
+      <button class="btn pri" type="button" data-adm="liberar-novo">Liberar</button></div>
+    ${ui.admErro ? `<p class="erro">${esc(ui.admErro)}</p>` : ''}
+    ${!a ? '<p>Carregando lista…</p>' : `
+      ${bloco('Pedidos aguardando', a.pendentes, [['liberar', 'Liberar', 'pri'], ['bloquear', 'Recusar', 'perigo']], 'Nenhum pedido no momento.')}
+      ${bloco('Liberados', a.liberados, [['bloquear', 'Bloquear', 'perigo']], 'Ninguém liberado ainda.')}
+      ${a.bloqueados.length ? bloco('Bloqueados', a.bloqueados, [['liberar', 'Desbloquear'], ['remover', 'Apagar']], '') : ''}`}
+    <button class="btn link" type="button" data-adm="atualizar">Atualizar lista</button></div>`;
+}
+async function carregarAdmin() {
+  try { ui.adm = await listarAcessos(); ui.admErro = ''; }
+  catch (e) { ui.admErro = e?.code === 'unavailable' || !navigator.onLine ? 'Sem internet para carregar a lista.' : mensagemErro(e); }
+  if (ui.vista === 'ajustes') renderAjustes();
+}
+
 function renderizar() {
+  if (!ui.iniciado) return; // nada aparece antes do portão de acesso liberar
   const agora = Date.now();
   renderTopo(agora);
   $$('main > section').forEach((s) => (s.hidden = s.dataset.vista !== ui.vista));
@@ -348,12 +384,15 @@ function diaAlvoAtual() {
 }
 function desenharModelos() {
   const dia = ui.diaAlvo || inicioDoDia(Date.now());
-  $('#modelos').innerHTML = MODELOS.map((m) => {
+  const grupos = [...new Set(MODELOS.map((m) => m.grupo))];
+  $('#modelos').innerHTML = grupos.map((g) => `<div class="modelos-grupo"><span>${esc(g)}</span><div class="modelos">${MODELOS.filter((m) => m.grupo === g).map((m) => {
     const d = m.subtipo === 'estagio_cpu' ? proximoFimDeSemana(dia) : dia;
     const h = horarioPadrao(m.subtipo, d);
-    const quando = h ? `${rotuloDia(h.inicio)} · ${hhmm(h.inicio)}–${hhmm(h.fim)}` : m.diaTodo ? `${rotuloDia(d.getTime())} · prazo` : `${rotuloDia(d.getTime())}${m.hora != null ? ' · ' + p2(m.hora) + ':00' : ''}`;
+    const quando = h
+      ? (h.diaTodo ? `${rotuloDia(h.inicio)} · dia todo` : `${rotuloDia(h.inicio)} · ${hhmm(h.inicio)}${h.fim ? '–' + hhmm(h.fim) : ''}`)
+      : m.diaTodo ? `${rotuloDia(d.getTime())} · prazo` : `${rotuloDia(d.getTime())}${m.hora != null ? ' · ' + p2(m.hora) + ':00' : ''}`;
     return `<button type="button" class="modelo" data-modelo="${m.id}" style="--cor:${corCat(m.categoria)}"><b>${esc(m.rotulo)}</b><span>${esc(quando)}</span></button>`;
-  }).join('');
+  }).join('')}</div></div>`).join('');
 }
 function abrirRapido() {
   ui.diaAlvo = ui.diaAlvo || diaAlvoAtual();
@@ -382,7 +421,7 @@ function salvarRapido(continuar) {
   const r = rapidoRes; if (!r) return;
   let { inicioMs: inicio, fimMs: fim, diaInteiro: diaTodo } = r;
   const regra = diaTodo ? horarioPadrao(r.subtipo, new Date(r.inicioMs)) : null; // "sentinela amanhã" → horário do serviço
-  if (regra) { inicio = regra.inicio; fim = regra.fim; diaTodo = false; }
+  if (regra) { inicio = regra.inicio; fim = regra.fim; diaTodo = regra.diaTodo; }
   store.salvarMissao({ id: novoId(), titulo: r.titulo, categoria: r.categoria, subtipo: r.subtipo, prioridade: r.prioridade,
     inicio, fim, diaTodo, local: r.local || '', obs: '', lembretes: r.lembretesMin, escala: null });
   vibrar(25);
@@ -404,8 +443,8 @@ $('#modelos').addEventListener('click', (e) => {
 $('#dlg-rapido').addEventListener('close', () => { ui.diaAlvo = null; });
 
 /* ---- Missão ---- */
-const fm = { editando: null, categoria: 'operacional', subtipo: 'guarda', prioridade: 'critico', lembretes: [], lembManual: false, horarioAuto: false, unidade: '', tituloAuto: '', localAuto: '' };
-const prioridadeSugerida = (st) => (SUBTIPOS[st].categoria === 'operacional' || st === 'prova' ? 'critico' : ['trabalho', 'seminario', 'formatura'].includes(st) ? 'importante' : 'rotineiro');
+const fm = { editando: null, categoria: 'operacional', subtipo: 'guarda', prioridade: 'critico', lembretes: [], lembManual: false, horarioAuto: false, unidade: '', tituloAuto: '', localAuto: '', detalhe: '' };
+const prioridadeSugerida = (st) => (st === 'sobreaviso' ? 'importante' : SUBTIPOS[st].categoria === 'operacional' || st === 'prova' ? 'critico' : ['trabalho', 'seminario', 'formatura'].includes(st) || SUBTIPOS[st].categoria === 'rotina' ? 'importante' : 'rotineiro');
 
 function desenharFormMissao() {
   $('#m-cat').innerHTML = Object.keys(CATEGORIAS).map((c) => chip({ rotulo: CATEGORIAS[c].rotulo, cor: corCat(c), ativo: fm.categoria === c, dados: `data-mc="${c}"` })).join('');
@@ -420,6 +459,14 @@ function desenharFormMissao() {
   $('#m-hora').disabled = dt;
   $('#m-lemb-lbl').textContent = dt ? 'Lembretes (antes das 08:00 do dia)' : 'Lembretes antes do início';
   $('#m-fim-box').hidden = !$('#m-temfim').checked;
+  // opções extras (Sobreaviso de… / posição nas salas)
+  const op = OPCOES_TIPO[fm.subtipo];
+  $('#m-opcoes').hidden = !op;
+  if (op) {
+    $('#m-opcoes').style.setProperty('--cor', corCat(fm.categoria));
+    $('#m-opcoes-lbl').textContent = op.rotulo;
+    $('#m-opcoes-chips').innerHTML = op.itens.map((x) => chip({ rotulo: x, cor: corCat(fm.categoria), ativo: fm.detalhe === x, dados: `data-op="${esc(x)}"` })).join('');
+  }
   // Estágio CPU: unidade (abas por CRPM) e oficial responsável
   const cpu = fm.subtipo === 'estagio_cpu';
   $('#m-cpu').hidden = !cpu;
@@ -442,9 +489,10 @@ function aplicarHorarioAuto() {
   const h = horarioPadrao(fm.subtipo, new Date(deCampos($('#m-data').value, '12:00')));
   if (!h) return;
   $('#m-diatodo').checked = false;
-  $('#m-hora').value = paraHora(h.inicio);
-  $('#m-temfim').checked = true;
-  $('#m-fimdata').value = paraData(h.fim); $('#m-fimhora').value = paraHora(h.fim);
+  $('#m-diatodo').checked = h.diaTodo;
+  $('#m-hora').value = h.diaTodo ? '' : paraHora(h.inicio);
+  $('#m-temfim').checked = !!h.fim;
+  if (h.fim) { $('#m-fimdata').value = paraData(h.fim); $('#m-fimhora').value = paraHora(h.fim); }
 }
 /** Ao escolher a unidade do CPU, ajusta título e local se ainda forem os automáticos. */
 function aplicarUnidade(u) {
@@ -471,7 +519,8 @@ function abrirMissao(id, { rapido, dia, modelo } = {}) {
     const h = horarioPadrao(modelo.subtipo, d);
     const ini = h ? h.inicio : modelo.diaTodo ? d.getTime() : new Date(d).setHours(modelo.hora ?? 7, 0, 0, 0);
     base = { titulo: modelo.titulo, categoria: modelo.categoria, subtipo: modelo.subtipo, prioridade: modelo.prioridade,
-      inicio: ini, fim: h ? h.fim : null, diaTodo: !!modelo.diaTodo, local: modelo.local || '', lembretes: modelo.lembretes, escala: modelo.escala || null };
+      inicio: ini, fim: h ? h.fim : null, diaTodo: h ? h.diaTodo : !!modelo.diaTodo, local: modelo.local || '', obs: modelo.obs || '',
+      lembretes: modelo.lembretes, escala: modelo.escala || null };
   }
   else {
     const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
@@ -479,7 +528,7 @@ function abrirMissao(id, { rapido, dia, modelo } = {}) {
     base = { titulo: '', categoria: 'operacional', subtipo: 'guarda', prioridade: 'critico', inicio: ini, fim: null, diaTodo: false, local: '', lembretes: lembretesPadrao('guarda', 'critico') };
   }
   Object.assign(fm, { categoria: base.categoria, subtipo: base.subtipo, prioridade: base.prioridade, lembretes: [...(base.lembretes || [])], lembManual: !!m,
-    horarioAuto: !m && !!horarioPadrao(base.subtipo, new Date(base.inicio)), unidade: base.escala?.unidade || '', tituloAuto: '', localAuto: '' });
+    horarioAuto: !m && !!horarioPadrao(base.subtipo, new Date(base.inicio)), unidade: base.escala?.unidade || '', tituloAuto: '', localAuto: '', detalhe: base.detalhe || '' });
   $('#m-oficial').value = base.escala?.oficial || '';
   $('#m-titulo').value = base.titulo || '';
   $('#m-data').value = paraData(base.inicio); $('#m-hora').value = base.diaTodo ? '' : paraHora(base.inicio);
@@ -503,10 +552,11 @@ $('#form-missao').addEventListener('click', (e) => {
   const c = e.target.closest('[data-mc]'), s = e.target.closest('[data-ms]'), p = e.target.closest('[data-mp]'), l = e.target.closest('[data-ml]');
   if (c) { fm.categoria = c.dataset.mc; fm.subtipo = subtiposDe(fm.categoria)[0]; if (!fm.editando) fm.prioridade = prioridadeSugerida(fm.subtipo); if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade); }
   else if (s) {
-    fm.subtipo = s.dataset.ms; if (!fm.editando) fm.prioridade = prioridadeSugerida(fm.subtipo); if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade);
+    fm.subtipo = s.dataset.ms; fm.detalhe = ''; if (!fm.editando) fm.prioridade = prioridadeSugerida(fm.subtipo); if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade);
     if (horarioPadrao(fm.subtipo, new Date())) { fm.horarioAuto = true; aplicarHorarioAuto(); }
   }
   else if (e.target.closest('[data-un]')) aplicarUnidade(e.target.closest('[data-un]').dataset.un);
+  else if (e.target.closest('[data-op]')) { const v = e.target.closest('[data-op]').dataset.op; fm.detalhe = fm.detalhe === v ? '' : v; }
   else if (p) { fm.prioridade = p.dataset.mp; if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade); }
   else if (l) { const min = +l.dataset.ml; fm.lembManual = true; fm.lembretes = fm.lembretes.includes(min) ? fm.lembretes.filter((x) => x !== min) : [...fm.lembretes, min].sort((a, b) => b - a); }
   else return;
@@ -542,7 +592,8 @@ $('#form-missao').addEventListener('submit', (e) => {
   const escala = SUBTIPOS_ESCALA.includes(fm.subtipo) ? { posto: $('#m-posto').value.trim(), funcao: $('#m-funcao').value.trim(), fardamento: $('#m-fard').value.trim(),
     ...(fm.subtipo === 'estagio_cpu' ? { unidade: fm.unidade, crpm: crpmDa(fm.unidade), oficial: $('#m-oficial').value.trim() } : {}) } : null;
   store.salvarMissao({ id: fm.editando || novoId(), titulo, categoria: fm.categoria, subtipo: fm.subtipo, prioridade: fm.prioridade,
-    inicio, fim, diaTodo, local: $('#m-local').value.trim(), obs: $('#m-obs').value.trim(), lembretes: fm.lembretes, escala });
+    inicio, fim, diaTodo, local: $('#m-local').value.trim(), obs: $('#m-obs').value.trim(), lembretes: fm.lembretes, escala,
+    detalhe: OPCOES_TIPO[fm.subtipo] ? fm.detalhe : '' });
   vibrar(25);
   fecharFolha('#dlg-missao');
   toast(fm.editando ? 'Alterações salvas' : `Salvo: ${titulo}`);
@@ -671,7 +722,25 @@ $('#plantao-corpo').addEventListener('click', (e) => {
 document.addEventListener('click', async (e) => {
   const t = e.target;
   const ir = t.closest('[data-ir]');
-  if (ir) { ui.vista = ir.dataset.ir; renderizar(); scrollTo({ top: 0 }); return; }
+  if (ir) { ui.vista = ir.dataset.ir; renderizar(); scrollTo({ top: 0 }); if (ui.vista === 'ajustes' && ui.conta?.admin) carregarAdmin(); return; }
+  const adm = t.closest('[data-adm]');
+  if (adm) {
+    const acao = adm.dataset.adm;
+    let email = adm.dataset.email;
+    if (acao === 'atualizar') { ui.adm = null; renderAjustes(); return carregarAdmin(); }
+    if (acao === 'liberar-novo') {
+      email = ($('#adm-email').value || '').trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { ui.admErro = 'Digite um e-mail válido.'; return renderAjustes(); }
+    }
+    adm.disabled = true;
+    try {
+      if (acao === 'liberar' || acao === 'liberar-novo') { await definirAcesso(email, true); toast(`${email} liberado`); }
+      if (acao === 'bloquear') { await definirAcesso(email, false); toast(`${email} bloqueado`); }
+      if (acao === 'remover') { await removerAcesso(email); toast(`${email} apagado da lista`); }
+      ui.admErro = '';
+    } catch (err) { ui.admErro = mensagemErro(err); }
+    return carregarAdmin();
+  }
 
   const chk = t.closest('[data-check]');
   if (chk) {
@@ -705,6 +774,7 @@ document.addEventListener('click', async (e) => {
   switch (ac.dataset.acao) {
     case 'missao-no-dia': ui.diaAlvo = ui.esc.sel; abrirRapido(); break;
     case 'novo-ciclo': abrirCiclo(null); break;
+    case 'sair-conta': await sairDaConta(); location.reload(); break;
     case 'limpar-pedir': ui.confirmarLimpar = true; renderizar(); break;
     case 'limpar-nao': ui.confirmarLimpar = false; renderizar(); break;
     case 'limpar-sim': ui.confirmarLimpar = false; removerHistorico(ac.dataset.chaves.split('|').filter(Boolean)); break;
@@ -798,13 +868,20 @@ navigator.serviceWorker?.addEventListener('message', (e) => {
 const hashInicial = location.hash.replace('#', '');
 if (['painel', 'escalas', 'missoes', 'ajustes'].includes(hashInicial)) ui.vista = hashInicial;
 
-store.assinar(() => renderizar());
-aplicarTema();
-renderizar();
-setInterval(tique, 1000);
-verificarLembretes();
-pedirArmazenamentoPersistente();
-
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker não registrado', e)));
 }
+
+/** Abre o app (depois do portão de acesso, quando ele está configurado). */
+function iniciarApp(conta) {
+  if (conta) { usarConta(conta.uid); ui.conta = conta; }
+  ui.iniciado = true;
+  store.assinar(() => renderizar());
+  aplicarTema();
+  renderizar();
+  if (ui.conta?.admin && ui.vista === 'ajustes') carregarAdmin();
+  setInterval(tique, 1000);
+  verificarLembretes();
+  pedirArmazenamentoPersistente();
+}
+iniciarPortao(iniciarApp);

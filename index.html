@@ -16,7 +16,7 @@
   <link rel="stylesheet" href="app.css">
   <script>
     // aplica o tema salvo antes de desenhar (evita piscar)
-    try { var t = JSON.parse(localStorage.getItem('agenda-cadete:v1') || '{}').config?.tema; if (t && t !== 'auto') document.documentElement.dataset.theme = t; } catch (e) {}
+    try { var t = localStorage.getItem('agenda-cadete:tema') || JSON.parse(localStorage.getItem('agenda-cadete:v1') || '{}').config?.tema; if (t && t !== 'auto') document.documentElement.dataset.theme = t; } catch (e) {}
   </script>
 </head>
 <body>
@@ -25,7 +25,7 @@
       <div class="marca">
         <img src="brasao-apmg.png" alt="Brasão da Academia Policial Militar do Guatupê" width="54" height="58">
         <div class="meio">
-          <div class="nome" id="nome-cadete">Cadete Euzebio</div>
+          <div class="nome" id="nome-cadete"></div>
           <h1>Agenda do Cadete</h1>
           <div class="hoje" id="hoje"></div>
         </div>
@@ -63,7 +63,7 @@
   <dialog class="folha" id="dlg-rapido" aria-labelledby="rapido-t">
     <div class="folha-cab"><h2 id="rapido-t">Adição rápida</h2><button class="fechar" type="button" data-fechar aria-label="Fechar">✕</button></div>
     <form class="folha-corpo" id="form-rapido" autocomplete="off">
-      <div class="campo"><span class="lbl">Escolha o tipo e confira a data</span><div class="modelos" id="modelos"></div></div>
+      <div class="campo"><span class="lbl">Escolha a função e confira a data</span><div id="modelos"></div></div>
       <div class="ou"><span>ou escreva em uma linha</span></div>
       <input class="rapido-in" id="rapido-txt" enterkeyhint="done" placeholder="Ex.: Guarda amanhã 7h às 7h !!!" aria-label="Descreva a missão">
       <div class="chips" id="rapido-chips"></div>
@@ -104,6 +104,10 @@
       </div>
       <div class="campo"><span class="lbl" id="m-lemb-lbl">Lembretes antes do início</span><div class="chips" id="m-lemb"></div></div>
       <div class="campo"><label class="lbl" for="m-local">Local / responsável</label><input id="m-local" placeholder="Ex.: Corpo da Guarda · Ten. Silva"></div>
+      <div class="caixa" id="m-opcoes" hidden>
+        <span class="lbl" id="m-opcoes-lbl"></span>
+        <div class="chips" id="m-opcoes-chips"></div>
+      </div>
       <div class="caixa" id="m-cpu" style="--cor: var(--c-operacional)" hidden>
         <span class="lbl">Estágio CPU</span>
         <div class="campo"><span class="lbl">Unidade em que está escalado</span><div id="m-unidades" class="grupos-un"></div></div>
@@ -176,6 +180,16 @@
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <!-- Portão de acesso (login por e-mail) -->
+  <div class="portao" id="portao" hidden>
+    <div class="portao-cab">
+      <img src="brasao-apmg.png" alt="" width="44" height="48">
+      <div><h1>Agenda do Cadete</h1><p>Acesso por e-mail</p></div>
+      <img src="brasao-esfo.png" alt="" width="30" height="48">
+    </div>
+    <div class="portao-corpo" id="portao-corpo"></div>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>

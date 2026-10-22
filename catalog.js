@@ -2,11 +2,19 @@ export const CATEGORIAS = {
     operacional: { rotulo: 'Operacional / Escala', icone: 'shield-checkmark' },
     academico: { rotulo: 'Acadêmico', icone: 'school' },
     administrativo: { rotulo: 'Administrativo', icone: 'document-text' },
+    rotina: { rotulo: 'Missão de rotina', icone: 'brush' },
     pessoal: { rotulo: 'Pessoal', icone: 'person' },
 };
 export const SUBTIPOS = {
+    respondente: { rotulo: 'Respondente', categoria: 'operacional', icone: 'shield' },
+    cmt_guarda: { rotulo: 'Cmt. da Guarda', categoria: 'operacional', icone: 'shield' },
     sentinela_guarda: { rotulo: 'Sentinela da Guarda', categoria: 'operacional', icone: 'shield' },
     sentinela_posto2: { rotulo: 'Sentinela do Posto II', categoria: 'operacional', icone: 'shield' },
+    dia_esfo: { rotulo: 'Dia-à-EsFO', categoria: 'operacional', icone: 'shield' },
+    cmt_bloco3: { rotulo: 'Cmt. do Bloco III', categoria: 'operacional', icone: 'shield' },
+    plantao_rondante: { rotulo: 'Plantão Rondante – Postos Externos', categoria: 'operacional', icone: 'walk' },
+    plantao_bloco3: { rotulo: 'Plantão do Bloco III', categoria: 'operacional', icone: 'shield' },
+    sobreaviso: { rotulo: 'Sobreaviso', categoria: 'operacional', icone: 'time' },
     estagio_cpu: { rotulo: 'Estágio CPU', categoria: 'operacional', icone: 'car' },
     escala_especial: { rotulo: 'Escala especial', categoria: 'operacional', icone: 'flag' },
     guarda: { rotulo: 'Serviço de guarda', categoria: 'operacional', icone: 'shield' },
@@ -18,6 +26,14 @@ export const SUBTIPOS = {
     aula: { rotulo: 'Instrução / aula', categoria: 'academico', icone: 'book' },
     documento: { rotulo: 'Documento / requerimento', categoria: 'administrativo', icone: 'folder-open' },
     formatura: { rotulo: 'Formatura / apresentação', categoria: 'administrativo', icone: 'flag' },
+    cafe_instrutores: { rotulo: 'Café dos Instrutores', categoria: 'rotina', icone: 'cafe' },
+    copa: { rotulo: 'Copa', categoria: 'rotina', icone: 'brush' },
+    viaturas_pm: { rotulo: 'Viaturas PM', categoria: 'rotina', icone: 'car' },
+    salas_comando: { rotulo: 'Salas: Comando, Coordenação, Subcomando', categoria: 'rotina', icone: 'brush' },
+    bloco_salas: { rotulo: 'Bloco de Salas de Aula', categoria: 'rotina', icone: 'brush' },
+    lavanderia: { rotulo: 'Lavanderia', categoria: 'rotina', icone: 'brush' },
+    museu_esfo: { rotulo: 'Museu EsFO', categoria: 'rotina', icone: 'brush' },
+    manutencao_adm: { rotulo: 'Manutenção prédio ADM', categoria: 'rotina', icone: 'brush' },
     pessoal: { rotulo: 'Pessoal', categoria: 'pessoal', icone: 'person' },
 };
 export const PRIORIDADES = {
@@ -27,7 +43,7 @@ export const PRIORIDADES = {
 };
 export const subtiposDe = (c) => Object.keys(SUBTIPOS).filter((s) => SUBTIPOS[s].categoria === c);
 /** Subtipos que contam como "dia de serviço" no calendário de escalas. */
-export const SUBTIPOS_ESCALA = ['sentinela_guarda', 'sentinela_posto2', 'estagio_cpu', 'escala_especial', 'guarda', 'oficial_dia', 'escala_outro'];
+export const SUBTIPOS_ESCALA = ['respondente', 'cmt_guarda', 'sentinela_guarda', 'sentinela_posto2', 'dia_esfo', 'cmt_bloco3', 'plantao_rondante', 'plantao_bloco3', 'sobreaviso', 'estagio_cpu', 'escala_especial', 'guarda', 'oficial_dia', 'escala_outro'];
 /** Opções de antecedência oferecidas na tela de cadastro (minutos). */
 export const OPCOES_LEMBRETE = [
     { min: 2880, rotulo: '2 dias' },
@@ -48,6 +64,8 @@ export function lembretesPadrao(subtipo, prioridade) {
     let base;
     if (cat === 'operacional')
         base = [1440, 120, 30];
+    else if (cat === 'rotina')
+        base = [120, 30];
     else if (subtipo === 'prova')
         base = [2880, 1440, 120];
     else if (subtipo === 'trabalho' || subtipo === 'seminario')

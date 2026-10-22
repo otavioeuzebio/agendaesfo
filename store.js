@@ -27,11 +27,12 @@
  *
  * Cada gravação é síncrona e imediata: fechar o app logo depois não perde nada.
  */
-const CHAVE = 'agenda-cadete:v1';
+const CHAVE_ANTIGA = 'agenda-cadete:v1';
+let CHAVE = CHAVE_ANTIGA; // vira "agenda-cadete:v1:<conta>" quando há login
 
 const vazio = () => ({
   versao: 1,
-  config: { nome: 'Cadete Euzebio', tema: 'auto' },
+  config: { nome: '', tema: 'auto' },
   missoes: [],
   ciclos: [],
   avisados: {},
@@ -64,12 +65,33 @@ function gravar() {
   ouvintes.forEach((fn) => fn(estado));
 }
 
+/**
+ * Passa a usar a agenda de uma conta. Cada conta tem a sua chave no
+ * aparelho, então duas pessoas no mesmo celular não veem a agenda uma da outra.
+ * A agenda que já existia antes do login vai para a primeira conta que entrar.
+ */
+export function usarConta(uid) {
+  CHAVE = `${CHAVE_ANTIGA}:${uid}`;
+  try {
+    const antiga = localStorage.getItem(CHAVE_ANTIGA);
+    if (antiga && !localStorage.getItem(CHAVE)) {
+      localStorage.setItem(CHAVE, antiga);
+      localStorage.removeItem(CHAVE_ANTIGA);
+    }
+  } catch (e) { /* armazenamento indisponível */ }
+  estado = carregar();
+  try { localStorage.setItem('agenda-cadete:tema', estado.config.tema || 'auto'); } catch (e) {}
+}
+
 export const store = {
   get: () => estado,
   falhouGravar: () => falhouGravar,
   assinar(fn) { ouvintes.add(fn); return () => ouvintes.delete(fn); },
 
-  setConfig(parcial) { estado.config = { ...estado.config, ...parcial }; gravar(); },
+  setConfig(parcial) {
+    estado.config = { ...estado.config, ...parcial }; gravar();
+    try { localStorage.setItem('agenda-cadete:tema', estado.config.tema || 'auto'); } catch (e) {}
+  },
 
   salvarMissao(m) {
     const agora = Date.now();

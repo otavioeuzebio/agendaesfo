@@ -8,7 +8,7 @@
  *
  * Ao publicar uma nova versão, altere VERSAO para forçar a atualização.
  */
-const VERSAO = 'agenda-cadete-v1.2.0';
+const VERSAO = 'agenda-cadete-v1.4.0';
 const ARQUIVOS = [
   './',
   './index.html',
@@ -19,6 +19,9 @@ const ARQUIVOS = [
   './agenda.js',
   './ics.js',
   './modelos.js',
+  './firebase-config.js',
+  './acesso.js',
+  './portao.js',
   './catalog.js',
   './dates.js',
   './quickParse.js',
@@ -43,9 +46,21 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// Bibliotecas do Firebase (login) vêm da gstatic: guardadas para abrir offline.
+const BIBLIOTECAS = 'https://www.gstatic.com';
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  if (req.method !== 'GET') return;
+  const origem = new URL(req.url).origin;
+  if (origem === BIBLIOTECAS) {
+    e.respondWith(caches.match(req).then((c) => c || fetch(req).then((res) => {
+      if (res.ok) { const copia = res.clone(); caches.open(VERSAO).then((cache) => cache.put(req, copia)); }
+      return res;
+    })));
+    return;
+  }
+  if (origem !== self.location.origin) return;
 
   if (req.mode === 'navigate') {
     e.respondWith(
