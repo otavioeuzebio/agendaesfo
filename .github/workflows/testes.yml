@@ -1,0 +1,19 @@
+name: Testes
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Conferir a sintaxe de todos os arquivos
+        run: for f in *.js sw.js; do node --check "$f"; done
+      - name: Testes de regras, sincronização e leitura de escalas
+        run: node --test tests/*.test.mjs
