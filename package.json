@@ -1,0 +1,9 @@
+{
+  "name": "agenda-do-cadete",
+  "private": true,
+  "type": "module",
+  "description": "Agenda do Cadete (PWA). O site não precisa de build; este arquivo só serve aos testes e à rotina de lembretes.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}

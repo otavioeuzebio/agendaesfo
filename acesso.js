@@ -18,7 +18,8 @@ export const ehAdmin = (email) => ADMIN_EMAILS.map((e) => e.toLowerCase()).inclu
 
 let fb = null; // módulos e instâncias carregados sob demanda
 
-async function carregar() {
+/** Firebase carregado (auth, firestore e instâncias). Usado também por nuvem.js. */
+export async function carregar() {
   if (fb) return fb;
   const [app, auth, fs] = await Promise.all([
     import(`${BASE}/firebase-app.js`),
@@ -28,7 +29,7 @@ async function carregar() {
   const inst = app.initializeApp(firebaseConfig);
   const a = auth.getAuth(inst);
   a.languageCode = 'pt';
-  fb = { auth, fs, a, db: fs.getFirestore(inst) };
+  fb = { auth, fs, a, inst, db: fs.getFirestore(inst), base: BASE };
   return fb;
 }
 
@@ -69,6 +70,15 @@ export async function redefinirSenha(email) {
   return auth.sendPasswordResetEmail(a, norm(email));
 }
 
+/** Confere a senha da conta atual (para criar a chave de criptografia em um login antigo). */
+export async function confirmarSenha(senha) {
+  const { auth, a } = await carregar();
+  const u = a.currentUser;
+  if (!u) throw Object.assign(new Error('sem login'), { code: 'auth/no-current-user' });
+  await auth.reauthenticateWithCredential(u, auth.EmailAuthProvider.credential(u.email, senha));
+  return u;
+}
+
 export async function sair() {
   const { auth, a } = await carregar();
   return auth.signOut(a);
@@ -85,14 +95,14 @@ export async function situacao(user) {
   try {
     const { fs, db } = await carregar();
     const snap = await fs.getDoc(fs.doc(db, 'acessos', email));
-    let s;
-    if (snap.exists()) s = snap.data().ativo === false ? 'bloqueado' : 'liberado';
+    let s, papel = '';
+    if (snap.exists()) { s = snap.data().ativo === false ? 'bloqueado' : 'liberado'; papel = snap.data().papel || ''; }
     else {
       s = 'pendente';
       // registra o pedido para o administrador ver (ignora se já existe)
       await fs.setDoc(fs.doc(db, 'pedidos', email), { email, criadoEm: fs.serverTimestamp() }).catch(() => {});
     }
-    try { localStorage.setItem(chave, JSON.stringify({ s, em: Date.now() })); } catch (e) {}
+    try { localStorage.setItem(chave, JSON.stringify({ s, papel, em: Date.now() })); } catch (e) {}
     return s;
   } catch (e) {
     try {
@@ -114,14 +124,25 @@ export async function listarAcessos() {
   return {
     pendentes: pedidos.docs.map((d) => d.id).filter((e) => !liberados.has(e)).sort(),
     liberados: [...liberados].filter(([, v]) => v.ativo !== false).map(([e]) => e).sort(),
+    papeis: Object.fromEntries([...liberados].map(([e, v]) => [e, v.papel || ''])),
     bloqueados: [...liberados].filter(([, v]) => v.ativo === false).map(([e]) => e).sort(),
   };
+}
+
+/** Papel salvo da conta ("escalante" pode publicar escalas para a turma). */
+export function papelDaConta(uid) {
+  try { return JSON.parse(localStorage.getItem(`agenda-cadete:acesso:${uid}`) || '{}').papel || ''; } catch (e) { return ''; }
+}
+
+export async function definirPapel(email, papel) {
+  const { fs, db } = await carregar();
+  await fs.updateDoc(fs.doc(db, 'acessos', norm(email)), { papel: papel || '', atualizadoEm: fs.serverTimestamp() });
 }
 
 export async function definirAcesso(email, ativo) {
   const { fs, db } = await carregar();
   email = norm(email);
-  await fs.setDoc(fs.doc(db, 'acessos', email), { ativo, atualizadoEm: fs.serverTimestamp() });
+  await fs.setDoc(fs.doc(db, 'acessos', email), { ativo, atualizadoEm: fs.serverTimestamp() }, { merge: true });
   await fs.deleteDoc(fs.doc(db, 'pedidos', email)).catch(() => {});
 }
 
@@ -146,6 +167,8 @@ export function mensagemErro(e) {
     'auth/too-many-requests': 'Muitas tentativas. Aguarde alguns minutos e tente de novo.',
     'auth/network-request-failed': 'Sem internet. Conecte-se para entrar pela primeira vez.',
     'permission-denied': 'Sem permissão para esta ação.',
+    'unavailable': 'Sem internet no momento. Tente de novo mais tarde.',
+    'auth/requires-recent-login': 'Por segurança, saia e entre de novo na conta.',
   };
   return m[c] || 'Não foi possível concluir. Tente de novo.';
 }

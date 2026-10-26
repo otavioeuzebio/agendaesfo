@@ -8,6 +8,7 @@ import {
   acessoConfigurado, observarConta, entrar, criarConta, reenviarVerificacao,
   atualizarUsuario, redefinirSenha, sair, situacao, mensagemErro,
 } from './acesso.js';
+import { guardarChaveDaSenha } from './cripto.js';
 
 const $ = (s, el = document) => el.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -15,6 +16,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 let liberado = false;
 let tela = 'entrar';
 let emailDigitado = '';
+let chavePendente = Promise.resolve();
+/** Espera a chave de criptografia (derivada da senha digitada agora) ficar pronta. */
+export const aguardarChave = () => chavePendente.catch(() => {});
 
 function mostrar(html) {
   const p = $('#portao');
@@ -124,11 +128,14 @@ export async function iniciarPortao(aoLiberar) {
     if (!senha) return msg('Digite a senha.');
     if (e.target.id === 'f-criar' && senha !== $('#p-senha2').value) return msg('As senhas não conferem.');
     ocupado(botao, true);
+    let pronto;
+    chavePendente = new Promise((r) => (pronto = r));
     try {
-      if (e.target.id === 'f-criar') await criarConta(email, senha);
-      else await entrar(email, senha);
+      const cred = e.target.id === 'f-criar' ? await criarConta(email, senha) : await entrar(email, senha);
+      // a chave do cofre criptografado nasce da senha, só neste aparelho
+      guardarChaveDaSenha(senha, cred.user.uid).then(pronto, pronto);
       // a troca de tela vem do observarConta
-    } catch (err) { msg(mensagemErro(err)); }
+    } catch (err) { pronto(); msg(mensagemErro(err)); }
     finally { ocupado(botao, false); }
   });
 

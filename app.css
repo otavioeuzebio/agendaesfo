@@ -193,7 +193,7 @@ dialog.folha[open] { display: grid; grid-template-rows: auto 1fr; animation: sob
 
 /* abas e botão flutuante */
 .abas { position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--surface); border-top: 1px solid var(--line); padding: 0 env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
-.abas-in { max-width: 560px; margin: 0 auto; display: grid; grid-template-columns: repeat(4, 1fr); height: var(--tab-h); }
+.abas-in { max-width: 560px; margin: 0 auto; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; height: var(--tab-h); }
 .abas button { border: 0; background: none; display: grid; justify-items: center; align-content: center; gap: 3px; font-size: .74rem; font-weight: 750; color: var(--muted); }
 .abas svg { width: 24px; height: 24px; }
 .abas button[aria-current="page"] { color: var(--gold); }
@@ -262,3 +262,73 @@ body.com-portao .fab, body.com-portao .abas { display: none; }
 .modelos-grupo { display: grid; gap: 8px; }
 .modelos-grupo + .modelos-grupo { margin-top: 10px; }
 .modelos-grupo > span { font-size: .74rem; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+
+/* ---------- v2: turma, em serviço, relatórios, notas, importação ---------- */
+.abas button { position: relative; }
+.badge { position: absolute; top: 8px; left: calc(50% + 6px); min-width: 9px; height: 9px; border-radius: 9px; background: var(--danger); }
+.importar-pdf { display: grid; grid-template-columns: auto 1fr; column-gap: 12px; text-align: left; align-items: center; border: 1.5px dashed var(--c-operacional); background: none; padding: 12px 14px; }
+.importar-pdf svg { width: 28px; height: 28px; grid-row: span 2; color: var(--c-operacional); }
+.importar-pdf small { font-weight: 500; color: var(--muted); font-size: .82rem; }
+
+.checklist { display: grid; gap: 2px; }
+.ck { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; padding: 7px 2px; border-bottom: 1px solid var(--line); }
+.ck:last-child { border-bottom: 0; }
+.ck input { width: 20px; height: 20px; accent-color: var(--ok); }
+.ck.ok span { text-decoration: line-through; color: var(--muted); }
+.ck .x { border: 0; background: none; color: var(--muted); font-size: 1rem; padding: 4px 8px; }
+
+.em-servico { border-radius: 16px; padding: 16px; background: linear-gradient(160deg, var(--navy), color-mix(in srgb, var(--navy) 70%, var(--c-operacional))); color: var(--on-navy); display: grid; gap: 12px; }
+.em-servico .lbl { color: var(--gold); }
+.em-servico h2 { margin: 0; font-size: 1.25rem; }
+.em-servico .cd { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; row-gap: 2px; }
+.em-servico .cd b { font-size: 2rem; font-weight: 800; white-space: nowrap; color: var(--gold); }
+.em-servico .cd small { flex: 1 1 140px; }
+.em-servico .barra-p { height: 6px; border-radius: 6px; background: rgba(255,255,255,.18); overflow: hidden; }
+.em-servico .barra-p i { display: block; height: 100%; background: var(--gold); }
+.em-servico .ck { border-color: rgba(255,255,255,.15); }
+.em-servico .ck.ok span { color: rgba(255,255,255,.6); }
+.em-servico .contatos { display: flex; flex-wrap: wrap; gap: 8px; }
+.em-servico .contatos a { color: var(--on-navy); background: rgba(255,255,255,.12); border-radius: 999px; padding: 8px 12px; text-decoration: none; font-weight: 700; font-size: .88rem; }
+.em-servico .btn { background: rgba(255,255,255,.14); color: var(--on-navy); }
+.em-servico .btn.ouro { background: var(--gold); color: var(--on-gold); }
+.em-servico small { opacity: .8; }
+
+.tabela { width: 100%; border-collapse: collapse; font-size: .92rem; background: var(--surface); border-radius: 12px; overflow: hidden; }
+.tabela th, .tabela td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; }
+.tabela th { font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.tabela td.n, .tabela th.n { text-align: right; font-variant-numeric: tabular-nums; }
+.tabela tr.total td { font-weight: 800; border-bottom: 0; }
+.cartoes-n { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cartoes-n div { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px; display: grid; }
+.cartoes-n b { font-size: 1.4rem; }
+.cartoes-n span { font-size: .78rem; color: var(--muted); }
+
+.disc { background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--cor, var(--c-academico)); border-radius: 12px; padding: 12px 14px; display: grid; gap: 8px; }
+.disc-cab { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
+.disc-cab b { font-size: 1.02rem; }
+.disc-media { font-size: 1.5rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.disc-av { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; font-size: .88rem; color: var(--muted); border: 0; background: none; text-align: left; padding: 4px 0; }
+.disc-av b { color: var(--fg); font-weight: 650; }
+.disc p { margin: 0; font-size: .88rem; }
+
+.cartao-n { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 6px; }
+.cartao-n h3 { margin: 0; font-size: 1rem; }
+.cartao-n p { margin: 0; font-size: .9rem; color: var(--muted); white-space: pre-line; }
+.cartao-n.importante { border-color: var(--gold); box-shadow: inset 4px 0 0 var(--gold); }
+.cartao-n .meta { font-size: .78rem; color: var(--muted); }
+.cartao-n .linha { margin-top: 4px; }
+.st { font-size: .74rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; background: var(--surface-2); }
+.st.pendente { color: var(--p-importante); } .st.aceita { color: var(--ok); } .st.recusada, .st.cancelada { color: var(--danger); }
+.mural-topo { border-left: 4px solid var(--gold); }
+
+.imp-lista { display: grid; gap: 6px; max-height: 44vh; overflow: auto; }
+.imp-item { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: center; background: var(--surface-2); border-radius: 10px; padding: 8px 10px; font-size: .9rem; }
+.imp-item input { width: 20px; height: 20px; }
+.imp-item small { display: block; color: var(--muted); }
+.imp-item.existe { opacity: .7; }
+.carregando { display: flex; gap: 10px; align-items: center; color: var(--muted); }
+.carregando::before { content: ""; width: 18px; height: 18px; border-radius: 50%; border: 3px solid var(--line); border-top-color: var(--gold); animation: gira 0.8s linear infinite; }
+@keyframes gira { to { transform: rotate(360deg); } }
+.ok-txt { color: var(--ok); font-weight: 650; }
+.cinza { color: var(--muted); }
+select { border: 1.5px solid var(--line); border-radius: 10px; padding: 10px; background: var(--surface); }

@@ -12,9 +12,12 @@
  * `renderizar()`, então a tela sempre reflete o que está salvo.
  */
 import { store, novoId, pedirArmazenamentoPersistente, usarConta } from './store.js';
-import { iniciarPortao, sairDaConta } from './portao.js';
-import { listarAcessos, definirAcesso, removerAcesso, mensagemErro } from './acesso.js';
-import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo } from './agenda.js';
+import { iniciarPortao, sairDaConta, aguardarChave } from './portao.js';
+import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel, papelDaConta } from './acesso.js';
+import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
+import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, SUBTIPOS_AVALIACAO, linhasParaMissoes } from './extras.js';
+import * as nuvem from './nuvem.js';
+import { gcalConfigurado, sincronizarAgenda, desconectar as gcalDesconectar } from './gcal.js';
 import { gerarICS, baixar } from './ics.js';
 import { MODELOS, UNIDADES_CPU, crpmDa, horarioPadrao, proximoFimDeSemana, GRUPOS_SOBREAVISO, POSICOES_SALAS } from './modelos.js';
 
@@ -46,7 +49,13 @@ const ui = {
   conta: null,    // { email, uid, admin } quando há login
   adm: null,      // lista de acessos carregada (administrador)
   admErro: '',  // dia usado pelas abas de modelos (dia selecionado na tela atual)
+  rel: { modo: 'mes', ref: new Date(new Date().getFullYear(), new Date().getMonth(), 1) }, // relatório de horas
+  turma: { carregado: false, carregando: false, perfil: null, avisos: [], trocas: [], escalas: [], erro: '', editarPerfil: false },
+  imp: null,      // importação de escala em andamento
+  stats: null,    // estatísticas (administrador)
+  senhaErro: '',
 };
+const temNuvem = () => !!ui.conta;
 
 function toast(msg, acao) {
   const t = $('#toast');
@@ -124,13 +133,47 @@ function chip({ rotulo, cor, ativo, dados, peq }) {
   return `<button type="button" class="chip${peq ? ' peq' : ''}" aria-pressed="${!!ativo}" ${dados} ${cor ? `style="--cor:${cor}"` : ''}>${cor ? '<span class="p"></span>' : ''}${esc(rotulo)}</button>`;
 }
 
+/** "sex 30/10 às 19:00" — data absoluta (serve também para avisos que chegam depois). */
+const dataCurta = (it) => `${DIAS_CURTOS[new Date(it.inicio).getDay()].toLowerCase()} ${ddmm(it.inicio)}${it.diaTodo ? '' : ' às ' + hhmm(it.inicio)}`;
+function textoLembrete(it, min) {
+  const titulo = `${SUBTIPOS[it.subtipo]?.rotulo || 'Missão'} em ${rotuloAntecedencia(min)}`;
+  const pend = it.origem === 'missao' ? pendentesChecklist(it) : 0;
+  const corpo = [it.titulo, dataCurta(it), it.local, pend && min >= 60 ? `Checklist: ${pend} pendente${pend > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+  return { titulo, corpo };
+}
+/** Serviços (escala) acontecendo agora. */
+function emServicoAgora(agora) {
+  return itensNoIntervalo(agora - 3 * DIA, agora + 1).filter((i) => i.status === 'pendente' && !i.diaTodo && SUBTIPOS_ESCALA.includes(i.subtipo) && i.inicio <= agora && fimEfetivo(i) > agora);
+}
+function linhaChecklist(m, i, c) {
+  return `<label class="ck${c.ok ? ' ok' : ''}"><input type="checkbox" data-ck="${esc(m.id)}:${i}" ${c.ok ? 'checked' : ''}><span>${esc(c.t)}</span><span></span></label>`;
+}
+function cartaoEmServico(it, agora) {
+  const fim = fimEfetivo(it);
+  const pct = Math.min(100, Math.max(0, ((agora - it.inicio) / (fim - it.inicio)) * 100));
+  const m = it.origem === 'missao' ? store.get().missoes.find((x) => x.id === it.id) : null;
+  const contatos = store.get().config.contatos || [];
+  return `<div class="em-servico" role="region" aria-label="Em serviço">
+    <span class="lbl">Em serviço · ${esc(SUBTIPOS[it.subtipo]?.rotulo || '')}</span>
+    <h2>${esc(it.titulo)}</h2>
+    <div class="cd"><b class="num" data-cd-fim="${fim}">${contagem(fim - agora)}</b><small>para a rendição · ${ddmm(fim)} às ${hhmm(fim)}</small></div>
+    <div class="barra-p" aria-hidden="true"><i style="width:${pct.toFixed(1)}%"></i></div>
+    ${it.local || it.detalhe ? `<small>${esc([it.local, it.detalhe].filter(Boolean).join(' · '))}</small>` : ''}
+    ${m?.checklist?.length ? `<div class="checklist">${m.checklist.map((c, i) => linhaChecklist(m, i, c)).join('')}</div>` : ''}
+    ${contatos.length ? `<div class="contatos">${contatos.map((c) => `<a href="tel:${esc(c.tel.replace(/[^\d+]/g, ''))}">📞 ${esc(c.nome)}</a>`).join('')}</div>` : ''}
+    <div class="linha"><button class="btn" type="button" data-abrir="${esc(it.chave)}">Detalhes</button><button class="btn ouro dir" type="button" data-check="${esc(it.chave)}">Encerrar serviço</button></div>
+    <small>Durante o serviço, só os lembretes críticos tocam; os demais chegam em silêncio.</small>
+  </div>`;
+}
+
 /* ============ 3. vistas ============ */
 function renderTopo(agora) {
   const { config } = store.get();
   $('#nome-cadete').textContent = config.nome || 'Cadete';
   const ext = dataPorExtenso(agora);
   $('#hoje').textContent = ext.charAt(0).toUpperCase() + ext.slice(1);
-  $('#contagem').hidden = ui.vista !== 'painel';
+  // em serviço, o cartão grande do painel já mostra a contagem
+  $('#contagem').hidden = ui.vista !== 'painel' || emServicoAgora(agora).length > 0;
   renderContagem(agora);
 }
 
@@ -172,6 +215,10 @@ function renderPainel(agora) {
   if (ui.instalar) avisos.push(`<div class="aviso"><p>Instale o app na tela inicial para abrir como aplicativo e usar offline.</p><button class="btn ouro" type="button" data-acao="instalar">Instalar</button></div>`);
   if ('Notification' in window && Notification.permission === 'default' && store.get().missoes.length + store.get().ciclos.length > 0)
     avisos.push(`<div class="aviso"><p>Ative os avisos para receber lembretes enquanto o app estiver aberto.</p><button class="btn" type="button" data-acao="notificar">Ativar avisos</button></div>`);
+  const nAviso = avisoNovo();
+  if (nAviso) avisos.push(`<div class="aviso mural-topo"><p><b>Aviso:</b> ${esc(nAviso.titulo)}</p><button class="btn" type="button" data-ir="turma">Ver mural</button></div>`);
+  const recebidas = ui.turma.trocas.filter((t) => !t.enviada && t.status === 'pendente').length;
+  if (recebidas) avisos.push(`<div class="aviso"><p>${recebidas === 1 ? 'Um colega pediu' : recebidas + ' pedidos de'} troca de serviço para você.</p><button class="btn pri" type="button" data-ir="turma">Responder</button></div>`);
   if (store.falhouGravar()) avisos.push(`<div class="aviso" style="border-color:var(--danger)"><p>O navegador recusou salvar os dados. Libere espaço ou saia da navegação anônima e faça um backup em Ajustes.</p></div>`);
 
   // linha do tempo
@@ -186,7 +233,9 @@ function renderPainel(agora) {
       }).join('')
     : `<div class="vazio">Nenhuma missão ${mesmoDia(dia, hoje) ? 'hoje' : 'neste dia'}. Toque no botão dourado para lançar.</div>`;
 
+  const servicos = emServicoAgora(agora);
   $('#v-painel').innerHTML = `<div class="secao" style="gap:18px">
+    ${servicos.map((i) => cartaoEmServico(i, agora)).join('')}
     ${avisos.join('')}
     <div class="resumo">
       <div><b class="num">${pend.length}</b><span>pendentes ${mesmoDia(dia, hoje) ? 'hoje' : esc(rotuloDia(dia.getTime(), agora).toLowerCase())}</span></div>
@@ -261,8 +310,78 @@ function renderEscalas(agora) {
   </div>`;
 }
 
+const chipsMissoes = (f) => `<div class="chips">
+      ${chip({ rotulo: 'Pendentes', ativo: f.status === 'pendente', dados: 'data-mstatus="pendente"' })}
+      ${chip({ rotulo: 'Concluídas', ativo: f.status === 'concluida', dados: 'data-mstatus="concluida"' })}
+      ${chip({ rotulo: 'Horas', ativo: f.status === 'horas', dados: 'data-mstatus="horas"' })}
+      ${chip({ rotulo: 'Notas', ativo: f.status === 'notas', dados: 'data-mstatus="notas"' })}
+    </div>`;
+
+function renderHoras(agora) {
+  const r = ui.rel;
+  const ano = r.ref.getFullYear(), mes = r.ref.getMonth();
+  const de = r.modo === 'mes' ? new Date(ano, mes, 1) : new Date(ano, 0, 1);
+  const ate = r.modo === 'mes' ? new Date(ano, mes + 1, 1) : new Date(ano + 1, 0, 1);
+  // conta cada serviço pelo dia em que começou
+  const itens = itensNoIntervalo(de.getTime() - 3 * DIA, ate.getTime(), { incluirPulados: true }).filter((i) => i.inicio >= de.getTime() && i.inicio < ate.getTime());
+  const rel = relatorioHoras(itens, agora);
+  const titulo = r.modo === 'mes' ? `${MESES[mes]} ${ano}` : `Ano de ${ano}`;
+  const h = (x) => (Math.round(x * 10) / 10).toLocaleString('pt-BR');
+  const futuros = itens.filter((i) => SUBTIPOS_ESCALA.includes(i.subtipo) && i.status === 'pendente' && fimEfetivo(i) > agora).length;
+  ui.relTexto = textoRelatorio(`Relatório de serviços · ${titulo}${store.get().config.nome ? ' · ' + store.get().config.nome : ''}`, rel);
+  $('#v-missoes').innerHTML = `<div class="secao" style="gap:14px">
+    <h2 class="titulo-vista">Missões</h2>
+    ${chipsMissoes(ui.mis)}
+    <div class="cal-cab"><button type="button" data-relnav="-1" aria-label="Anterior">‹</button><h2>${titulo}</h2><button type="button" data-relnav="1" aria-label="Próximo">›</button></div>
+    <div class="linha">${chip({ rotulo: 'Mês', ativo: r.modo === 'mes', dados: 'data-relmodo="mes"', peq: true })}${chip({ rotulo: 'Ano', ativo: r.modo === 'ano', dados: 'data-relmodo="ano"', peq: true })}</div>
+    <div class="cartoes-n">
+      <div><b class="num">${rel.total.qtd}</b><span>serviços cumpridos</span></div>
+      <div><b class="num">${h(rel.total.horas)}</b><span>horas de serviço</span></div>
+      <div><b class="num">${rel.sobreaviso.qtd}</b><span>sobreavisos</span></div>
+    </div>
+    ${rel.linhas.length ? `<table class="tabela"><thead><tr><th>Tipo</th><th class="n">Qtd.</th><th class="n">Horas</th></tr></thead><tbody>
+      ${rel.linhas.map((l) => `<tr><td>${esc(l.rotulo)}</td><td class="n">${l.qtd}</td><td class="n">${h(l.horas)}</td></tr>`).join('')}
+      ${rel.sobreaviso.qtd ? `<tr><td>Sobreaviso <small class="cinza">(à parte)</small></td><td class="n">${rel.sobreaviso.qtd}</td><td class="n">${h(rel.sobreaviso.horas)}</td></tr>` : ''}
+      <tr class="total"><td>Total de serviço</td><td class="n">${rel.total.qtd}</td><td class="n">${h(rel.total.horas)}</td></tr></tbody></table>`
+      : `<div class="vazio">Nenhum serviço cumprido em ${esc(titulo.toLowerCase())}.</div>`}
+    <p class="dica">Conta os serviços já terminados (ou marcados como cumpridos), exceto os trocados/dispensados. ${rel.rotina.qtd ? `Missões de rotina: <b>${rel.rotina.qtd}</b>. ` : ''}${futuros ? `Ainda previstos no período: <b>${futuros}</b>.` : ''}</p>
+    ${rel.total.qtd || rel.sobreaviso.qtd ? '<button class="btn pri" type="button" data-acao="compartilhar-rel">Compartilhar relatório</button>' : ''}
+  </div>`;
+}
+
+function renderNotas() {
+  const { missoes, config } = store.get();
+  const minima = +(config.mediaMinima ?? 7);
+  const discs = mediasAcademicas(missoes, minima);
+  const fmt = (x) => (x == null ? '–' : (Math.round(x * 100) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 2 }));
+  const sit = {
+    'garantida': ['var(--ok)', 'Média mínima já garantida'],
+    'em-aberto': ['var(--p-importante)', ''],
+    'impossivel': ['var(--danger)', 'Mesmo com 10 nas restantes não alcança a mínima'],
+    'aprovado': ['var(--ok)', 'Acima da média mínima'],
+    'abaixo': ['var(--danger)', 'Abaixo da média mínima'],
+    'sem-notas': ['var(--muted)', 'Lance as notas quando saírem'],
+  };
+  $('#v-missoes').innerHTML = `<div class="secao" style="gap:14px">
+    <h2 class="titulo-vista">Missões</h2>
+    ${chipsMissoes(ui.mis)}
+    <div class="linha"><label class="lbl" for="nt-min">Média mínima</label><div class="campo" style="width:90px"><input id="nt-min" type="number" min="0" max="10" step="0.5" inputmode="decimal" value="${esc(minima)}"></div>
+      <button class="btn pri dir" type="button" data-acao="nova-prova">+ Prova ou trabalho</button></div>
+    ${discs.length ? discs.map((d) => {
+      const [cor, txt] = sit[d.situacao];
+      const msg = d.situacao === 'em-aberto' ? `Precisa de <b>${fmt(d.precisa)}</b> de média nas avaliações restantes (peso ${fmt(d.pesosFaltam)})` : txt;
+      return `<div class="disc" style="--cor:${cor}">
+        <div class="disc-cab"><b>${esc(d.disciplina)}</b><span class="disc-media" style="color:${cor}">${fmt(d.media)}</span></div>
+        ${d.avaliacoes.map((a) => `<button type="button" class="disc-av" data-abrir="${esc(a.id)}"><b>${esc(a.titulo)}</b><span>${ddmm(a.inicio)} · peso ${fmt(a.peso)}</span><span class="num">${a.nota == null ? '—' : fmt(a.nota)}</span></button>`).join('')}
+        <p style="color:${cor}">${msg}</p></div>`;
+    }).join('') : '<div class="vazio">Lance provas e trabalhos com a disciplina, o peso e a nota para ver as médias e quanto falta para passar.</div>'}
+  </div>`;
+}
+
 function renderMissoes(agora) {
   const f = ui.mis;
+  if (f.status === 'horas') return renderHoras(agora);
+  if (f.status === 'notas') return renderNotas();
   let lista = f.status === 'pendente'
     ? itensNoIntervalo(agora - 30 * DIA, agora + 90 * DIA).filter((i) => i.status === 'pendente')
     : itensNoIntervalo(agora - 120 * DIA, agora + 365 * DIA).filter((i) => i.status === 'concluida').reverse();
@@ -283,10 +402,7 @@ function renderMissoes(agora) {
   }
   $('#v-missoes').innerHTML = `<div class="secao" style="gap:14px">
     <h2 class="titulo-vista">Missões</h2>
-    <div class="linha">
-      ${chip({ rotulo: 'Pendentes', ativo: f.status === 'pendente', dados: 'data-mstatus="pendente"' })}
-      ${chip({ rotulo: 'Concluídas', ativo: f.status === 'concluida', dados: 'data-mstatus="concluida"' })}
-    </div>
+    ${chipsMissoes(f)}
     <div class="chips rolar">
       ${chip({ rotulo: 'Todas', ativo: f.cat === 'todas', dados: 'data-mcat="todas"', peq: true })}
       ${Object.keys(CATEGORIAS).map((c) => chip({ rotulo: CATEGORIAS[c].rotulo, cor: corCat(c), ativo: f.cat === c, dados: `data-mcat="${c}"`, peq: true })).join('')}
@@ -301,60 +417,230 @@ function renderMissoes(agora) {
   </div>`;
 }
 
+function blocoSinc() {
+  const st = nuvem.statusNuvem();
+  const quando = st.ultimaSinc ? `${rotuloDia(st.ultimaSinc)} às ${hhmm(st.ultimaSinc)}` : 'nunca';
+  let corpo;
+  if (st.cofre === 'sem-chave') corpo = `<p>Para guardar uma cópia <b>criptografada</b> e usar a mesma agenda em outro celular, confirme a senha da sua conta. A chave nasce da senha e fica só nos seus aparelhos: nem o administrador consegue ler.</p>
+      <div class="campo"><label class="lbl" for="aj-senha">Senha da conta</label><input id="aj-senha" type="password" autocomplete="current-password"></div>
+      ${ui.senhaErro ? `<p class="erro">${esc(ui.senhaErro)}</p>` : ''}
+      <button class="btn pri" type="button" data-acao="ativar-sinc">Ativar sincronização</button>`;
+  else if (st.cofre === 'chave-diferente') corpo = `<p class="erro">A cópia na nuvem foi criada com outra senha (por exemplo, antes de redefinir a senha) e não pode ser aberta.</p>
+      <p>Você pode substituí-la pela agenda deste aparelho. A cópia antiga será apagada.</p>
+      <button class="btn perigo" type="button" data-acao="substituir-cofre">Usar a agenda deste aparelho</button>`;
+  else corpo = `<p>${st.cofre === 'ok' ? '<span class="ok-txt">Ligada.</span> ' : st.cofre === 'offline' ? 'Sem internet agora; sincroniza quando voltar. ' : st.cofre === 'erro' ? `<span class="erro">Falhou (${esc(st.erro)}).</span> ` : ''}Última sincronização: ${esc(quando)}. Entre com a mesma conta em outro aparelho e a agenda aparece lá. A cópia é criptografada com a sua senha.</p>
+      <button class="btn" type="button" data-acao="sincronizar">Sincronizar agora</button>`;
+  return `<div class="ajuste"><h3>Sincronização entre aparelhos</h3>${corpo}</div>`;
+}
+function blocoPush() {
+  const ativo = nuvem.pushAtivo();
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const instalado = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  return `<div class="ajuste"><h3>Avisos com o app fechado</h3>
+    <p>Recebe os lembretes mesmo com o app fechado (precisa de internet no momento do aviso). O texto do aviso vai criptografado: só este aparelho abre.</p>
+    ${ios && !instalado ? '<p>No iPhone, instale o app na tela de início primeiro (Compartilhar → Adicionar à Tela de Início) e ative por lá.</p>' : ''}
+    ${ativo ? '<p class="ok-txt">Ligado neste aparelho.</p><div class="linha"><button class="btn" type="button" data-acao="testar-aviso">Testar aviso</button><button class="btn perigo" type="button" data-acao="desligar-push">Desligar</button></div>'
+      : '<button class="btn ouro" type="button" data-acao="ligar-push">Ligar avisos com o app fechado</button>'}</div>`;
+}
+function blocoGcal() {
+  if (!gcalConfigurado()) return '';
+  const k = `agenda-cadete:gcal:${ui.conta?.uid || 'local'}`;
+  let info = null; try { info = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) {}
+  return `<div class="ajuste"><h3>Google Agenda</h3>
+    <p>Copia as missões dos próximos 60 dias para o seu Google Agenda (com os mesmos lembretes). Rodar de novo atualiza o que mudou e apaga o que saiu.</p>
+    ${info?.em ? `<p>Última vez: ${esc(rotuloDia(info.em))} às ${hhmm(info.em)} · ${info.ids?.length || 0} eventos.</p>` : ''}
+    <div class="linha"><button class="btn pri" type="button" data-acao="gcal-sinc">Sincronizar com o Google Agenda</button>${info ? '<button class="btn link" type="button" data-acao="gcal-sair">Desconectar</button>' : ''}</div></div>`;
+}
+
 function renderAjustes() {
   const { config, missoes, ciclos } = store.get();
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   const perm = 'Notification' in window ? Notification.permission : 'indisponivel';
+  const contatos = config.contatos || [];
   $('#v-ajustes').innerHTML = `<div class="secao" style="gap:14px">
     <h2 class="titulo-vista">Ajustes</h2>
     <div class="ajuste"><h3>Nome no topo</h3>
       <div class="campo"><input id="aj-nome" value="${esc(config.nome)}" aria-label="Nome exibido no topo"></div>
       <button class="btn pri" type="button" data-acao="salvar-nome">Salvar nome</button></div>
+    <div class="ajuste"><h3>Seus nomes nas escalas</h3>
+      <p>Usados para achar os seus serviços ao importar uma escala em PDF.</p>
+      <div class="campo"><label class="lbl" for="aj-ncompleto">Nome completo (Serviço Interno)</label><input id="aj-ncompleto" value="${esc(config.nomeCompleto || '')}" autocomplete="name"></div>
+      <div class="campo"><label class="lbl" for="aj-nguerra">Nome de guerra (Escala da Rotina)</label><input id="aj-nguerra" value="${esc(config.nomeGuerra || '')}"></div>
+      <div class="linha"><button class="btn pri" type="button" data-acao="salvar-nomes">Salvar</button><button class="btn" type="button" data-acao="importar-pdf">Importar escala em PDF</button></div></div>
+    <div class="ajuste"><h3>Contatos do serviço</h3>
+      <p>Aparecem no modo "Em serviço" para ligar com um toque (Cmt. da Guarda, Oficial de Dia, Dia-à-EsFO…).</p>
+      ${contatos.map((c, i) => `<div class="adm-item"><span><b>${esc(c.nome)}</b> · ${esc(c.tel)}</span><button class="btn link" type="button" data-contato-rm="${i}">Remover</button></div>`).join('')}
+      <div class="dupla"><div class="campo"><label class="lbl" for="aj-ct-nome">Nome / função</label><input id="aj-ct-nome"></div>
+        <div class="campo"><label class="lbl" for="aj-ct-tel">Telefone</label><input id="aj-ct-tel" type="tel" inputmode="tel"></div></div>
+      <button class="btn" type="button" data-acao="add-contato">Adicionar contato</button></div>
     <div class="ajuste"><h3>Aparência</h3>
       <div class="chips">${[['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']].map(([v, r]) => chip({ rotulo: r, ativo: config.tema === v, dados: `data-tema="${v}"` })).join('')}</div></div>
     <div class="ajuste"><h3>Lembretes</h3>
-      <p>Com o app aberto (ou recém-aberto), os lembretes aparecem como aviso do sistema. Para alarmes que tocam <b>mesmo com o app fechado e sem internet</b>, envie as missões para a agenda do celular.</p>
-      ${perm === 'granted' ? '<p style="color:var(--ok);font-weight:650">Avisos ativados neste aparelho.</p>'
+      <p>Com o app aberto (ou recém-aberto), os lembretes aparecem como aviso do sistema. ${temNuvem() ? 'Para avisos com o app fechado, ligue a opção abaixo.' : ''} Também dá para mandar tudo para a agenda do celular, que toca mesmo sem internet.</p>
+      ${perm === 'granted' ? '<p class="ok-txt">Avisos ativados neste aparelho.</p>'
         : perm === 'denied' ? '<p>Avisos bloqueados. Libere nas configurações do navegador para este site.</p>'
         : perm === 'indisponivel' ? '<p>Este navegador não oferece avisos. Use a agenda do celular.</p>'
         : '<button class="btn" type="button" data-acao="notificar">Ativar avisos</button>'}
       <button class="btn ouro" type="button" data-acao="ics-tudo">Enviar próximos 60 dias para a agenda do celular (.ics)</button></div>
-    <div class="ajuste"><h3>Backup</h3>
-      <p>Os dados ficam só neste aparelho (${missoes.length} missões, ${ciclos.length} ciclos). Faça backup antes de trocar de celular ou limpar o navegador.</p>
+    ${temNuvem() ? blocoPush() : ''}
+    ${blocoGcal()}
+    ${temNuvem() ? blocoSinc() : ''}
+    <div class="ajuste"><h3>Backup em arquivo</h3>
+      <p>${missoes.length} missões e ${ciclos.length} ciclos neste aparelho. O arquivo de backup não é criptografado: guarde em local seguro.</p>
       <div class="linha"><button class="btn pri" type="button" data-acao="backup">Baixar backup</button>
         <label class="btn" for="aj-importar" style="cursor:pointer">Restaurar backup</label>
         <input type="file" id="aj-importar" accept="application/json,.json" hidden></div></div>
     <div class="ajuste"><h3>Instalar no celular</h3>
-      ${standalone ? '<p style="color:var(--ok);font-weight:650">Você já está usando o app instalado.</p>'
+      ${standalone ? '<p class="ok-txt">Você já está usando o app instalado.</p>'
         : ui.instalar ? '<button class="btn ouro" type="button" data-acao="instalar">Instalar agora</button>'
         : '<p><b>Android (Chrome):</b> menu ⋮ → <i>Instalar app</i> ou <i>Adicionar à tela inicial</i>.<br><b>iPhone (Safari):</b> botão Compartilhar → <i>Adicionar à Tela de Início</i>.</p>'}</div>
     ${ui.conta ? `<div class="ajuste"><h3>Conta</h3>
-      <p>Conectado como <b>${esc(ui.conta.email)}</b>${ui.conta.admin ? ' · administrador' : ''}. Sua agenda fica só neste aparelho e ninguém mais tem acesso a ela.</p>
+      <p>Conectado como <b>${esc(ui.conta.email)}</b>${ui.conta.admin ? ' · administrador' : ui.conta.papel === 'escalante' ? ' · escalante' : ''}. Ninguém mais tem acesso à sua agenda.</p>
       <button class="btn" type="button" data-acao="sair-conta">Sair da conta</button></div>` : ''}
     ${ui.conta?.admin ? renderAdmin() : ''}
-    <p class="rodape">Agenda do Cadete · funciona offline · dados salvos no aparelho</p>
+    <p class="rodape">Agenda do Cadete v${nuvem.VERSAO_APP} · funciona offline</p>
   </div>`;
 }
 
 function renderAdmin() {
   const a = ui.adm;
-  const item = (email, botoes) => `<div class="adm-item"><span>${esc(email)}</span>${botoes.map(([acao, rot, cls]) => `<button class="btn ${cls || ''}" type="button" data-adm="${acao}" data-email="${esc(email)}">${rot}</button>`).join('')}</div>`;
+  const item = (email, botoes) => `<div class="adm-item"><span>${esc(email)}${a?.papeis?.[email] === 'escalante' ? ' <small class="st aceita">escalante</small>' : ''}</span>${botoes(email).map(([acao, rot, cls]) => `<button class="btn ${cls || ''}" type="button" data-adm="${acao}" data-email="${esc(email)}">${rot}</button>`).join('')}</div>`;
   const bloco = (titulo, lista, botoes, vazio) => `<div class="adm-sub">${titulo} (${lista.length})</div><div class="adm-lista">${lista.length ? lista.map((e) => item(e, botoes)).join('') : `<p>${vazio}</p>`}</div>`;
+  const st = ui.stats;
   return `<div class="ajuste"><h3>Administração de acessos</h3>
-    <p>Você libera ou bloqueia quem pode usar o app. Aqui aparecem só os e-mails: as agendas ficam no aparelho de cada pessoa e você não tem acesso a elas.</p>
+    <p>Você libera ou bloqueia quem pode usar o app e escolhe quem é <b>escalante</b> (publica escalas para a turma). Aqui aparecem só os e-mails: as agendas são criptografadas por cada cadete e você não tem acesso a elas.</p>
     <div class="linha"><div class="campo" style="flex:1;min-width:200px"><input id="adm-email" type="email" inputmode="email" placeholder="e-mail para liberar" aria-label="E-mail para liberar"></div>
       <button class="btn pri" type="button" data-adm="liberar-novo">Liberar</button></div>
     ${ui.admErro ? `<p class="erro">${esc(ui.admErro)}</p>` : ''}
     ${!a ? '<p>Carregando lista…</p>' : `
-      ${bloco('Pedidos aguardando', a.pendentes, [['liberar', 'Liberar', 'pri'], ['bloquear', 'Recusar', 'perigo']], 'Nenhum pedido no momento.')}
-      ${bloco('Liberados', a.liberados, [['bloquear', 'Bloquear', 'perigo']], 'Ninguém liberado ainda.')}
-      ${a.bloqueados.length ? bloco('Bloqueados', a.bloqueados, [['liberar', 'Desbloquear'], ['remover', 'Apagar']], '') : ''}`}
-    <button class="btn link" type="button" data-adm="atualizar">Atualizar lista</button></div>`;
+      ${bloco('Pedidos aguardando', a.pendentes, () => [['liberar', 'Liberar', 'pri'], ['bloquear', 'Recusar', 'perigo']], 'Nenhum pedido no momento.')}
+      ${bloco('Liberados', a.liberados, (e) => [a.papeis?.[e] === 'escalante' ? ['tirar-escalante', 'Tirar escalante'] : ['escalante', 'Tornar escalante'], ['bloquear', 'Bloquear', 'perigo']], 'Ninguém liberado ainda.')}
+      ${a.bloqueados.length ? bloco('Bloqueados', a.bloqueados, () => [['liberar', 'Desbloquear'], ['remover', 'Apagar']], '') : ''}`}
+    <button class="btn link" type="button" data-adm="atualizar">Atualizar lista</button></div>
+  <div class="ajuste"><h3>Estatísticas de uso</h3>
+    <p>Só números de acesso (sem nenhum conteúdo das agendas).</p>
+    ${st ? (st.erro ? `<p class="erro">${esc(st.erro)}</p>` : `<div class="cartoes-n">
+      <div><b class="num">${st.total}</b><span>contas que já usaram</span></div>
+      <div><b class="num">${st.semana}</b><span>ativas em 7 dias</span></div>
+      <div><b class="num">${st.mes}</b><span>ativas em 30 dias</span></div>
+      <div><b class="num">${st.hoje}</b><span>hoje</span></div>
+      <div><b class="num">${st.instalados}</b><span>com app instalado</span></div>
+      <div><b class="num">${st.push ?? '–'}</b><span>com avisos ligados</span></div></div>
+      <p>${Object.entries(st.porPlat).map(([k, v]) => `${esc(k)}: ${v}`).join(' · ')}</p>`) : ''}
+    <button class="btn" type="button" data-adm="stats">${st ? 'Atualizar números' : 'Ver números'}</button></div>`;
 }
 async function carregarAdmin() {
   try { ui.adm = await listarAcessos(); ui.admErro = ''; }
   catch (e) { ui.admErro = e?.code === 'unavailable' || !navigator.onLine ? 'Sem internet para carregar a lista.' : mensagemErro(e); }
   if (ui.vista === 'ajustes') renderAjustes();
+}
+
+
+/* ---- Turma (mural, trocas, escalas publicadas) ---- */
+function avisoNovo() {
+  const a = ui.turma.avisos[0];
+  return a && a.criadoEm > (store.get().config.avisoVisto || 0) ? a : null;
+}
+function atualizarBadge() {
+  const n = (avisoNovo() ? 1 : 0) + ui.turma.trocas.filter((t) => !t.enviada && t.status === 'pendente').length;
+  $('#badge-turma').hidden = !n;
+}
+async function carregarTurma() {
+  if (!temNuvem() || ui.turma.carregando) return;
+  ui.turma.carregando = true;
+  const T = ui.turma;
+  const tentar = async (fn, padrao) => { try { return await fn(); } catch (e) { console.warn(e); T.erro = mensagemErro(e); return padrao; } };
+  T.erro = '';
+  const [perfil, avisos, escalas] = await Promise.all([tentar(nuvem.lerMeuPerfil, T.perfil), tentar(nuvem.listarAvisos, T.avisos), tentar(nuvem.listarEscalas, T.escalas)]);
+  Object.assign(T, { perfil, avisos, escalas });
+  T.trocas = await tentar(nuvem.minhasTrocas, T.trocas);
+  T.carregado = true; T.carregando = false;
+  atualizarBadge();
+  if (ui.vista === 'turma' || ui.vista === 'painel') renderizar();
+}
+
+const ROT_STATUS = { pendente: 'Aguardando', aceita: 'Aceita', recusada: 'Recusada', cancelada: 'Cancelada' };
+function descServico(sv) {
+  if (!sv) return 'Serviço';
+  return `${SUBTIPOS[sv.subtipo]?.rotulo || sv.titulo} · ${dataCurta(sv)}${sv.detalhe ? ' · ' + sv.detalhe : ''}`;
+}
+function cartaoTroca(t) {
+  const sv = t.servico;
+  const outro = t.enviada ? t.paraNome : t.deNome;
+  let botoes = [];
+  if (t.ilegivel) botoes.push(['apagar', 'Apagar']);
+  else if (!t.enviada && t.status === 'pendente') botoes = [['aceita', 'Aceitar', 'pri'], ['recusada', 'Recusar', 'perigo']];
+  else if (t.enviada && t.status === 'pendente') botoes = [['cancelada', 'Cancelar pedido']];
+  else if (t.status === 'aceita') {
+    botoes = [['fiscal', 'Avisar o fiscal', 'ouro']];
+    const jaTenho = store.get().missoes.some((m) => m.id === `troca-${t.id}`);
+    if (!t.enviada && !jaTenho) botoes.push(['assumir', 'Pôr na minha agenda', 'pri']);
+    if (t.enviada) botoes.push(['liberar', 'Tirar da minha agenda']);
+    if (t.enviada) botoes.push(['cancelada', 'Desfazer troca']);
+  } else botoes = [['apagar', 'Apagar']];
+  return `<div class="cartao-n">
+    <div class="linha"><span class="st ${t.status}">${ROT_STATUS[t.status] || t.status}</span><span class="meta">${t.enviada ? 'Você pediu a' : 'Pedido de'} Cad. ${esc(outro)}</span></div>
+    <h3>${t.ilegivel ? 'Dados indisponíveis neste aparelho' : esc(descServico(sv))}</h3>
+    ${t.motivo ? `<p>${esc(t.motivo)}</p>` : ''}
+    <span class="meta">${ddmm(t.criadoEm)} às ${hhmm(t.criadoEm)}</span>
+    <div class="linha">${botoes.map(([a, r, c]) => `<button class="btn ${c || ''}" type="button" data-troca="${a}" data-id="${esc(t.id)}">${r}</button>`).join('')}</div></div>`;
+}
+
+function renderTurma() {
+  const T = ui.turma;
+  const c = store.get().config;
+  if (!temNuvem()) { $('#v-turma').innerHTML = '<div class="secao"><h2 class="titulo-vista">Turma</h2><div class="vazio">Disponível com login.</div></div>'; return; }
+  if (!T.carregado) { $('#v-turma').innerHTML = `<div class="secao"><h2 class="titulo-vista">Turma</h2><p class="carregando">Carregando…</p></div>`; carregarTurma(); return; }
+  const admin = ui.conta.admin;
+  const escalante = admin || ui.conta.papel === 'escalante';
+  const p = T.perfil;
+  const editar = !p || T.editarPerfil;
+  const recebidas = T.trocas.filter((t) => !t.enviada), enviadas = T.trocas.filter((t) => t.enviada);
+  $('#v-turma').innerHTML = `<div class="secao" style="gap:16px">
+    <h2 class="titulo-vista">Turma</h2>
+    ${T.erro ? `<div class="aviso"><p>${esc(T.erro)}</p><button class="btn" type="button" data-acao="turma-atualizar">Tentar de novo</button></div>` : ''}
+
+    <div class="secao"><h2 class="lbl">Mural de avisos</h2>
+      ${admin ? `<div class="ajuste"><h3>Novo aviso</h3>
+        <div class="campo"><label class="lbl" for="av-titulo">Título</label><input id="av-titulo" maxlength="120"></div>
+        <div class="campo"><label class="lbl" for="av-texto">Texto</label><textarea id="av-texto" maxlength="2000"></textarea></div>
+        <label class="toggle"><input type="checkbox" id="av-imp"> Importante (destacado)</label>
+        <button class="btn pri" type="button" data-acao="publicar-aviso">Publicar para todos</button></div>` : ''}
+      ${T.avisos.length ? T.avisos.map((a) => `<div class="cartao-n${a.importante ? ' importante' : ''}"><h3>${esc(a.titulo)}</h3>${a.texto ? `<p>${esc(a.texto)}</p>` : ''}
+        <div class="linha"><span class="meta">${esc(rotuloDia(a.criadoEm))} às ${hhmm(a.criadoEm)}</span>${admin ? `<button class="btn link dir" type="button" data-aviso-rm="${esc(a.id)}">Apagar</button>` : ''}</div></div>`).join('')
+        : '<div class="vazio">Nenhum aviso no mural.</div>'}
+    </div>
+
+    <div class="secao"><h2 class="lbl">Seu perfil na turma</h2>
+      ${editar ? `<div class="ajuste">
+        <p>Para trocar serviços pelo app, entre na turma. Os colegas da mesma turma veem só seu nome, nome de guerra e turma — nunca a sua agenda.</p>
+        <div class="campo"><label class="lbl" for="pf-nome">Nome completo</label><input id="pf-nome" value="${esc(p?.nome || c.nomeCompleto || '')}"></div>
+        <div class="dupla"><div class="campo"><label class="lbl" for="pf-guerra">Nome de guerra</label><input id="pf-guerra" value="${esc(p?.nomeGuerra || c.nomeGuerra || '')}"></div>
+          <div class="campo"><label class="lbl" for="pf-turma">Turma</label><input id="pf-turma" placeholder="Ex.: CFO 2º ano" value="${esc(p?.turma || c.turma || '')}" maxlength="40"></div></div>
+        <p class="dica">Escreva a turma igual aos colegas (ex.: todos "CFO 2º ano"): só quem tem a mesma turma aparece para troca.</p>
+        <div class="linha"><button class="btn pri" type="button" data-acao="salvar-perfil">${p ? 'Salvar' : 'Entrar na turma'}</button>${p ? '<button class="btn" type="button" data-acao="cancelar-perfil">Cancelar</button>' : ''}</div></div>`
+      : `<div class="cartao-n"><h3>Cad. ${esc(p.nomeGuerra || p.nome)} · ${esc(p.turma)}</h3><p>${esc(p.nome)}</p>
+          <div class="linha"><button class="btn" type="button" data-acao="editar-perfil">Editar</button><button class="btn link dir" type="button" data-acao="sair-turma">Sair da turma</button></div></div>`}
+    </div>
+
+    <div class="secao"><h2 class="lbl">Trocas de serviço</h2>
+      <p class="dica">Para pedir: abra o serviço na agenda e toque em <b>"Pedir troca a um colega pelo app"</b>. Os dados do serviço vão criptografados: só você e o colega leem. Depois de aceita, avise o fiscal.</p>
+      ${recebidas.length ? `<span class="lbl">Recebidas</span>${recebidas.map(cartaoTroca).join('')}` : ''}
+      ${enviadas.length ? `<span class="lbl">Enviadas</span>${enviadas.map(cartaoTroca).join('')}` : ''}
+      ${!T.trocas.length ? '<div class="vazio">Nenhuma troca por enquanto.</div>' : ''}
+    </div>
+
+    <div class="secao"><h2 class="lbl">Escalas da turma</h2>
+      ${escalante ? '<button class="btn ouro" type="button" data-acao="publicar-escala">Publicar escala (PDF) para a turma</button>' : ''}
+      ${T.escalas.length ? T.escalas.map((e) => `<div class="cartao-n"><h3>${esc(e.titulo)}</h3>
+        <span class="meta">${e.tipo === 'interna' ? 'Serviço Interno' : 'Missões de Rotina'} · ${e.linhas?.length || 0} linhas · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
+        <div class="linha"><button class="btn pri" type="button" data-escala="${esc(e.id)}">Ver meus serviços</button>${admin || e.publicadoPor === ui.conta.email ? `<button class="btn link dir" type="button" data-escala-rm="${esc(e.id)}">Apagar</button>` : ''}</div></div>`).join('')
+        : `<div class="vazio">Nenhuma escala publicada.${escalante ? '' : ' Enquanto isso, importe o PDF pelo botão dourado.'}</div>`}
+    </div>
+    <button class="btn link" type="button" data-acao="turma-atualizar">Atualizar</button>
+  </div>`;
+  // ao abrir a aba, o aviso mais recente conta como visto
+  if (avisoNovo()) { store.setConfig({ avisoVisto: Date.now() }); atualizarBadge(); }
 }
 
 function renderizar() {
@@ -366,6 +652,7 @@ function renderizar() {
   if (ui.vista === 'painel') renderPainel(agora);
   if (ui.vista === 'escalas') renderEscalas(agora);
   if (ui.vista === 'missoes') renderMissoes(agora);
+  if (ui.vista === 'turma') renderTurma();
   if (ui.vista === 'ajustes') renderAjustes();
 }
 
@@ -443,7 +730,15 @@ $('#modelos').addEventListener('click', (e) => {
 $('#dlg-rapido').addEventListener('close', () => { ui.diaAlvo = null; });
 
 /* ---- Missão ---- */
-const fm = { editando: null, categoria: 'operacional', subtipo: 'guarda', prioridade: 'critico', lembretes: [], lembManual: false, horarioAuto: false, unidade: '', tituloAuto: '', localAuto: '', detalhe: '' };
+const fm = { editando: null, categoria: 'operacional', subtipo: 'guarda', prioridade: 'critico', lembretes: [], lembManual: false, horarioAuto: false, unidade: '', tituloAuto: '', localAuto: '', detalhe: '', checklist: [], checkManual: false };
+function desenharChecklist() {
+  const l = fm.checklist;
+  $('#m-check-lista').innerHTML = l.length ? l.map((c, i) => `<label class="ck${c.ok ? ' ok' : ''}"><input type="checkbox" data-fck="${i}" ${c.ok ? 'checked' : ''}><span>${esc(c.t)}</span><button class="x" type="button" data-fck-rm="${i}" aria-label="Remover item: ${esc(c.t)}">✕</button></label>`).join('')
+    : '<span class="cinza" style="font-size:.88rem">Sem itens. Adicione abaixo ou use o padrão.</span>';
+  const pend = l.filter((c) => !c.ok).length;
+  $('#m-check-cont').textContent = l.length ? `· ${l.length - pend}/${l.length}` : '';
+  $('#m-check-padrao').hidden = !checklistPadrao(fm.subtipo).length;
+}
 const prioridadeSugerida = (st) => (st === 'sobreaviso' ? 'importante' : SUBTIPOS[st].categoria === 'operacional' || st === 'prova' ? 'critico' : ['trabalho', 'seminario', 'formatura'].includes(st) || SUBTIPOS[st].categoria === 'rotina' ? 'importante' : 'rotineiro');
 
 function desenharFormMissao() {
@@ -472,6 +767,12 @@ function desenharFormMissao() {
   $('#m-cpu').hidden = !cpu;
   if (cpu) $('#m-unidades').innerHTML = UNIDADES_CPU.map((g) => `<div class="g"><span>${g.crpm}</span><div class="chips">${
     g.unidades.map((u) => chip({ rotulo: u, cor: 'var(--c-operacional)', ativo: fm.unidade === u, dados: `data-un="${u}"` })).join('')}</div></div>`).join('');
+  // notas (provas/trabalhos) e checklist
+  $('#m-acad').hidden = !SUBTIPOS_AVALIACAO.includes(fm.subtipo);
+  $('#m-check').hidden = fm.categoria === 'pessoal' && !fm.checklist.length;
+  $('#m-check').style.setProperty('--cor', corCat(fm.categoria));
+  desenharChecklist();
+  $('#t-app').hidden = !(temNuvem() && fm.editando && SUBTIPOS_ESCALA.includes(fm.subtipo));
   // regra de horário do serviço
   const d = $('#m-data').value ? new Date(deCampos($('#m-data').value, '12:00')) : null;
   const h = d ? horarioPadrao(fm.subtipo, d) : null;
@@ -528,7 +829,10 @@ function abrirMissao(id, { rapido, dia, modelo } = {}) {
     base = { titulo: '', categoria: 'operacional', subtipo: 'guarda', prioridade: 'critico', inicio: ini, fim: null, diaTodo: false, local: '', lembretes: lembretesPadrao('guarda', 'critico') };
   }
   Object.assign(fm, { categoria: base.categoria, subtipo: base.subtipo, prioridade: base.prioridade, lembretes: [...(base.lembretes || [])], lembManual: !!m,
-    horarioAuto: !m && !!horarioPadrao(base.subtipo, new Date(base.inicio)), unidade: base.escala?.unidade || '', tituloAuto: '', localAuto: '', detalhe: base.detalhe || '' });
+    horarioAuto: !m && !!horarioPadrao(base.subtipo, new Date(base.inicio)), unidade: base.escala?.unidade || '', tituloAuto: '', localAuto: '', detalhe: base.detalhe || '',
+    checklist: m ? (m.checklist || []).map((c) => ({ ...c })) : checklistPadrao(base.subtipo), checkManual: !!m });
+  $('#m-disc').value = m?.disciplina || ''; $('#m-peso').value = m?.peso ?? ''; $('#m-nota').value = m?.nota ?? ''; $('#m-check-novo').value = '';
+  $('#lista-disc').innerHTML = [...new Set(store.get().missoes.map((x) => x.disciplina).filter(Boolean))].sort().map((d) => `<option value="${esc(d)}">`).join('');
   $('#m-oficial').value = base.escala?.oficial || '';
   $('#m-titulo').value = base.titulo || '';
   $('#m-data').value = paraData(base.inicio); $('#m-hora').value = base.diaTodo ? '' : paraHora(base.inicio);
@@ -553,9 +857,14 @@ $('#form-missao').addEventListener('click', (e) => {
   if (c) { fm.categoria = c.dataset.mc; fm.subtipo = subtiposDe(fm.categoria)[0]; if (!fm.editando) fm.prioridade = prioridadeSugerida(fm.subtipo); if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade); }
   else if (s) {
     fm.subtipo = s.dataset.ms; fm.detalhe = ''; if (!fm.editando) fm.prioridade = prioridadeSugerida(fm.subtipo); if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade);
+    if (!fm.checkManual) fm.checklist = checklistPadrao(fm.subtipo);
     if (horarioPadrao(fm.subtipo, new Date())) { fm.horarioAuto = true; aplicarHorarioAuto(); }
   }
   else if (e.target.closest('[data-un]')) aplicarUnidade(e.target.closest('[data-un]').dataset.un);
+  else if (e.target.closest('[data-fck-rm]')) { e.preventDefault(); fm.checkManual = true; fm.checklist.splice(+e.target.closest('[data-fck-rm]').dataset.fckRm, 1); }
+  else if (e.target.closest('[data-fck]')) { const i = +e.target.closest('[data-fck]').dataset.fck; fm.checkManual = true; fm.checklist[i].ok = e.target.closest('[data-fck]').checked; }
+  else if (e.target.id === 'm-check-add') { const t = $('#m-check-novo').value.trim(); if (!t) return; fm.checkManual = true; fm.checklist.push({ t, ok: false }); $('#m-check-novo').value = ''; }
+  else if (e.target.id === 'm-check-padrao') { fm.checkManual = true; const atuais = new Set(fm.checklist.map((c) => c.t)); fm.checklist.push(...checklistPadrao(fm.subtipo).filter((c) => !atuais.has(c.t))); }
   else if (e.target.closest('[data-op]')) { const v = e.target.closest('[data-op]').dataset.op; fm.detalhe = fm.detalhe === v ? '' : v; }
   else if (p) { fm.prioridade = p.dataset.mp; if (!fm.lembManual) fm.lembretes = lembretesPadrao(fm.subtipo, fm.prioridade); }
   else if (l) { const min = +l.dataset.ml; fm.lembManual = true; fm.lembretes = fm.lembretes.includes(min) ? fm.lembretes.filter((x) => x !== min) : [...fm.lembretes, min].sort((a, b) => b - a); }
@@ -589,11 +898,15 @@ $('#form-missao').addEventListener('submit', (e) => {
     if (fim <= inicio) return erro('O término precisa ser depois do início.');
   }
   if (fm.subtipo === 'estagio_cpu' && !fm.unidade) return erro('Escolha a unidade do Estágio CPU.');
+  const acad = SUBTIPOS_AVALIACAO.includes(fm.subtipo);
+  const nota = $('#m-nota').value.trim(), peso = $('#m-peso').value.trim();
+  if (acad && nota !== '' && !(+nota >= 0 && +nota <= 10)) return erro('A nota precisa estar entre 0 e 10.');
   const escala = SUBTIPOS_ESCALA.includes(fm.subtipo) ? { posto: $('#m-posto').value.trim(), funcao: $('#m-funcao').value.trim(), fardamento: $('#m-fard').value.trim(),
     ...(fm.subtipo === 'estagio_cpu' ? { unidade: fm.unidade, crpm: crpmDa(fm.unidade), oficial: $('#m-oficial').value.trim() } : {}) } : null;
   store.salvarMissao({ id: fm.editando || novoId(), titulo, categoria: fm.categoria, subtipo: fm.subtipo, prioridade: fm.prioridade,
     inicio, fim, diaTodo, local: $('#m-local').value.trim(), obs: $('#m-obs').value.trim(), lembretes: fm.lembretes, escala,
-    detalhe: OPCOES_TIPO[fm.subtipo] ? fm.detalhe : '' });
+    detalhe: OPCOES_TIPO[fm.subtipo] ? fm.detalhe : '', checklist: fm.checklist,
+    disciplina: acad ? $('#m-disc').value.trim() : '', peso: acad && peso !== '' ? +peso : null, nota: acad && nota !== '' ? +nota : null });
   vibrar(25);
   fecharFolha('#dlg-missao');
   toast(fm.editando ? 'Alterações salvas' : `Salvo: ${titulo}`);
@@ -602,6 +915,8 @@ $('#m-excluir').addEventListener('click', () => { $('#m-confirmar').hidden = fal
 $('#m-nao').addEventListener('click', () => { $('#m-confirmar').hidden = true; });
 $('#m-sim').addEventListener('click', () => { store.excluirMissao(fm.editando); fecharFolha('#dlg-missao'); toast('Missão excluída'); });
 $('#m-ics').addEventListener('click', () => { const it = acharItem(fm.editando); if (it) baixar('missao.ics', gerarICS([it]), 'text/calendar'); });
+$('#m-check-novo').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#m-check-add').click(); } });
+$('#t-app').addEventListener('click', () => abrirPedidoTroca(fm.editando));
 $('#t-salvar').addEventListener('click', () => {
   const com = $('#t-com').value.trim();
   if (!com) { const el = $('#m-erro'); el.textContent = 'Informe com quem foi a troca.'; el.hidden = false; return; }
@@ -718,16 +1033,250 @@ $('#plantao-corpo').addEventListener('click', (e) => {
   toast(acao === 'pular' ? 'Plantão retirado do calendário' : 'Plantão atualizado');
 });
 
+/* ---- Importar escala (PDF ou publicada pela turma) ---- */
+/**
+ * ui.imp = { etapa: 'inicio'|'lendo'|'resultado'|'erro', modo: 'importar'|'publicar',
+ *            tipo, linhas (todas), nomeArquivo, origem: 'pdf'|'turma', erro }
+ */
+function abrirImportar(modo = 'importar') {
+  ui.imp = { etapa: 'inicio', modo };
+  desenharImportar();
+  abrirFolha('#dlg-importar');
+}
+function abrirEscalaPublicada(id) {
+  const e = ui.turma.escalas.find((x) => x.id === id);
+  if (!e) return;
+  ui.imp = { etapa: 'resultado', modo: 'importar', tipo: e.tipo, linhas: e.linhas || [], nomeArquivo: e.titulo, origem: 'turma' };
+  desenharImportar();
+  abrirFolha('#dlg-importar');
+}
+function meusServicosDaEscala(imp, cfg) {
+  const norm = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9.\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const alvo = norm(imp.tipo === 'interna' ? cfg.nomeCompleto : cfg.nomeGuerra);
+  if (!alvo) return null;
+  return imp.linhas.filter((l) => norm(l.nome) === alvo);
+}
+function tituloEscala(imp) {
+  const datas = imp.linhas.map((l) => l.data).sort();
+  if (!datas.length) return imp.nomeArquivo || 'Escala';
+  const f = (d) => d.split('-').reverse().slice(0, 2).join('/');
+  return `${imp.tipo === 'interna' ? 'Serviço Interno' : 'Missões de Rotina'} · ${f(datas[0])} a ${f(datas[datas.length - 1])}`;
+}
+function desenharImportar() {
+  const imp = ui.imp, cfg = store.get().config, corpo = $('#importar-corpo');
+  $('#importar-t').textContent = imp.modo === 'publicar' ? 'Publicar escala para a turma' : 'Importar escala';
+  const nomes = `<div class="dupla">
+      <div class="campo"><label class="lbl" for="im-ncompleto">Seu nome completo</label><input id="im-ncompleto" value="${esc(cfg.nomeCompleto || '')}" placeholder="Como está no Serviço Interno"></div>
+      <div class="campo"><label class="lbl" for="im-nguerra">Nome de guerra</label><input id="im-nguerra" value="${esc(cfg.nomeGuerra || '')}" placeholder="Como está na Rotina"></div></div>`;
+  if (imp.etapa === 'inicio') {
+    corpo.innerHTML = `<p class="dica">Escolha o PDF da <b>Previsão de Escala de Serviço Interno</b> ou da <b>Escala da Rotina</b>. O arquivo é lido aqui no aparelho${imp.modo === 'publicar' ? ' e a escala inteira fica disponível para a turma' : ' e nada é enviado'}.</p>
+      ${imp.modo === 'importar' ? nomes : ''}
+      <label class="btn pri" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher PDF</label>`;
+    return;
+  }
+  if (imp.etapa === 'lendo') { corpo.innerHTML = '<p class="carregando">Lendo a escala…</p>'; return; }
+  if (imp.etapa === 'erro') {
+    corpo.innerHTML = `<p class="erro">${esc(imp.erro)}</p><label class="btn" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher outro PDF</label>`;
+    return;
+  }
+  // resultado
+  const titulo = tituloEscala(imp);
+  const podePublicar = imp.origem === 'pdf' && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante');
+  if (imp.modo === 'publicar') {
+    const dias = new Set(imp.linhas.map((l) => l.data)).size;
+    corpo.innerHTML = `<div class="previa"><b>${esc(titulo)}</b><span>${imp.linhas.length} ${imp.tipo === 'interna' ? 'linhas' : 'células'} em ${dias} dias.</span></div>
+      <div class="campo"><label class="lbl" for="im-titulo">Título para a turma</label><input id="im-titulo" value="${esc(titulo)}"></div>
+      <p class="dica">Os cadetes liberados verão a escala na aba Turma e importam só os próprios serviços.</p>
+      <div class="linha"><button class="btn pri" type="button" data-imp="publicar">Publicar</button><label class="btn" for="arquivo-pdf" style="cursor:pointer">Outro PDF</label></div>`;
+    return;
+  }
+  const meus = meusServicosDaEscala(imp, cfg);
+  const missoes = meus ? linhasParaMissoes(meus) : [];
+  const existentes = new Set(store.get().missoes.map((m) => m.id));
+  imp.missoes = missoes;
+  const nomeUsado = imp.tipo === 'interna' ? 'nome completo' : 'nome de guerra';
+  corpo.innerHTML = `<div class="previa"><b>${esc(titulo)}</b><span>${imp.linhas.length} ${imp.tipo === 'interna' ? 'linhas lidas' : 'nomes lidos'}${imp.origem === 'turma' ? ' · publicada na turma' : ''}.</span></div>
+    ${nomes}
+    ${meus == null ? `<p class="erro">Preencha o seu ${nomeUsado} para achar os seus serviços.</p>`
+      : !missoes.length ? `<p class="erro">Nenhum serviço com esse ${nomeUsado}. Confira se está escrito como na escala.</p>`
+      : `<span class="lbl">${missoes.length} serviço${missoes.length > 1 ? 's' : ''} seu${missoes.length > 1 ? 's' : ''}</span>
+        <div class="imp-lista">${missoes.map((m, i) => `<label class="imp-item${existentes.has(m.id) ? ' existe' : ''}"><input type="checkbox" data-imp-sel="${i}" checked>
+          <span><b>${esc(m.titulo)}</b>${m.detalhe && m.subtipo !== 'sobreaviso' ? ' · ' + esc(m.detalhe) : ''}<small>${esc(rotuloDia(m.inicio))} · ${esc(horario(m))}${existentes.has(m.id) ? ' · já está na agenda (horário será atualizado)' : ''}</small></span></label>`).join('')}</div>
+        <button class="btn pri" type="button" data-imp="adicionar">Adicionar à agenda</button>`}
+    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}`;
+}
+async function lerPdfEscolhido(arquivo) {
+  ui.imp = { ...(ui.imp || { modo: 'importar' }), etapa: 'lendo', nomeArquivo: arquivo.name };
+  desenharImportar();
+  try {
+    const pdf = await import('./escalaPdf.js');
+    const itens = await pdf.extrairItens(arquivo);
+    const tipo = pdf.detectarTipo(itens);
+    if (!tipo) throw new Error('Não reconheci este PDF como Escala de Serviço Interno nem Escala da Rotina.');
+    const linhas = tipo === 'interna' ? pdf.lerEscalaInterna(itens) : pdf.lerEscalaRotina(itens, new Date());
+    if (!linhas.length) throw new Error('Não encontrei a tabela da escala neste PDF.');
+    Object.assign(ui.imp, { etapa: 'resultado', tipo, linhas, origem: 'pdf' });
+  } catch (e) {
+    console.error(e);
+    Object.assign(ui.imp, { etapa: 'erro', erro: e.message?.startsWith('Não') ? e.message : 'Não foi possível ler este PDF.' });
+  }
+  desenharImportar();
+}
+$('#importar-corpo').addEventListener('input', (e) => {
+  if (e.target.id !== 'im-ncompleto' && e.target.id !== 'im-nguerra') return;
+  const nomes = { nomeCompleto: $('#im-ncompleto').value.trim(), nomeGuerra: $('#im-nguerra').value.trim() };
+  clearTimeout(lerPdfEscolhido.t);
+  lerPdfEscolhido.t = setTimeout(() => {
+    store.setConfig(nomes);
+    if (ui.imp?.etapa === 'resultado') { const id = document.activeElement?.id; const pos = document.activeElement?.selectionStart; desenharImportar(); const el = id && $('#' + id); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (err) {} } }
+  }, 350);
+});
+$('#importar-corpo').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-imp]'); if (!b) return;
+  const imp = ui.imp;
+  if (b.dataset.imp === 'adicionar') {
+    const sel = $$('[data-imp-sel]').filter((x) => x.checked).map((x) => imp.missoes[+x.dataset.impSel]);
+    if (!sel.length) return toast('Nenhum serviço marcado');
+    const novas = store.salvarMissoes(sel);
+    fecharFolha('#dlg-importar');
+    vibrar(25);
+    toast(novas === sel.length ? `${novas} serviço${novas > 1 ? 's' : ''} na agenda` : `${novas} novo${novas === 1 ? '' : 's'}, ${sel.length - novas} atualizado${sel.length - novas === 1 ? '' : 's'}`);
+  }
+  if (b.dataset.imp === 'ir-publicar') { imp.modo = 'publicar'; desenharImportar(); }
+  if (b.dataset.imp === 'publicar') {
+    b.disabled = true;
+    try {
+      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || tituloEscala(imp), linhas: imp.linhas });
+      fecharFolha('#dlg-importar'); toast('Escala publicada para a turma');
+      ui.turma.carregado = false; carregarTurma();
+    } catch (err) { b.disabled = false; toast(mensagemErro(err)); }
+  }
+});
+$('#arquivo-pdf').addEventListener('change', (e) => {
+  const f = e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  if (!$('#dlg-importar').open) { ui.imp = { modo: 'importar' }; abrirFolha('#dlg-importar'); }
+  lerPdfEscolhido(f);
+});
+$('#rapido-pdf').addEventListener('click', () => { fecharFolha('#dlg-rapido'); abrirImportar('importar'); });
+
+/* ---- Pedido de troca pelo app ---- */
+let trocaAlvo = null;
+async function abrirPedidoTroca(chave) {
+  const it = acharItem(chave); if (!it) return;
+  if (!ui.turma.carregado) await carregarTurma();
+  const perfil = ui.turma.perfil;
+  if (!perfil) { fecharFolha('#dlg-missao'); ui.vista = 'turma'; renderizar(); return toast('Entre na turma primeiro para pedir trocas.'); }
+  trocaAlvo = { it, perfil, colegas: null, escolhido: '' };
+  fecharFolha('#dlg-missao');
+  desenharTroca();
+  abrirFolha('#dlg-troca');
+  try { trocaAlvo.colegas = await nuvem.colegasDaTurma(perfil.turma); }
+  catch (e) { trocaAlvo.erro = mensagemErro(e); trocaAlvo.colegas = []; }
+  desenharTroca();
+}
+function desenharTroca() {
+  const t = trocaAlvo, corpo = $('#troca-corpo');
+  corpo.innerHTML = `<div class="previa"><b>${esc(t.it.titulo)}</b><span>${esc(dataCurta(t.it))}${t.it.fim ? ' → ' + ddmm(t.it.fim) + ' ' + hhmm(t.it.fim) : ''}</span>${t.it.detalhe ? `<span>${esc(t.it.detalhe)}</span>` : ''}</div>
+    <span class="lbl">Colega da turma ${esc(t.perfil.turma)}</span>
+    ${t.colegas == null ? '<p class="carregando">Buscando colegas…</p>'
+      : t.colegas.length ? `<div class="chips">${t.colegas.map((c) => chip({ rotulo: 'Cad. ' + (c.nomeGuerra || c.nome), ativo: t.escolhido === c.email, dados: `data-colega="${esc(c.email)}"` })).join('')}</div>`
+      : `<p class="erro">${esc(t.erro || 'Nenhum colega desta turma entrou no app ainda.')}</p>`}
+    <div class="campo"><label class="lbl" for="tr-motivo">Motivo</label><input id="tr-motivo" placeholder="Ex.: consulta médica, viagem" value="${esc(t.motivo || '')}"></div>
+    <p class="dica">O colega recebe o pedido na aba Turma. Os dados do serviço vão criptografados entre vocês dois.</p>
+    <button class="btn pri" type="button" data-tr="enviar" ${t.escolhido ? '' : 'disabled'}>Enviar pedido</button>`;
+}
+$('#troca-corpo').addEventListener('click', async (e) => {
+  const c = e.target.closest('[data-colega]');
+  if (c) { trocaAlvo.motivo = $('#tr-motivo').value; trocaAlvo.escolhido = c.dataset.colega; return desenharTroca(); }
+  const b = e.target.closest('[data-tr="enviar"]'); if (!b) return;
+  const t = trocaAlvo, it = t.it;
+  const colega = t.colegas.find((x) => x.email === t.escolhido);
+  b.disabled = true;
+  try {
+    const servico = { titulo: it.titulo, subtipo: it.subtipo, categoria: it.categoria, inicio: it.inicio, fim: it.fim, diaTodo: it.diaTodo, local: it.local || '', detalhe: it.detalhe || '', chave: it.chave };
+    await nuvem.pedirTroca({ colega, meuPerfil: t.perfil, servico, motivo: $('#tr-motivo').value.trim() });
+    if (it.origem === 'missao') store.registrarTroca(it.id, { comQuem: 'Cad. ' + (colega.nomeGuerra || colega.nome), motivo: $('#tr-motivo').value.trim(), status: 'solicitada' });
+    fecharFolha('#dlg-troca'); toast('Pedido de troca enviado');
+    ui.turma.carregado = false; carregarTurma();
+  } catch (err) { b.disabled = false; toast(err.code === 'sem-chave' ? 'Ative a sincronização em Ajustes primeiro.' : mensagemErro(err)); }
+});
+
+/** Texto pronto para avisar o fiscal da troca. */
+function textoFiscal(t) {
+  const sv = t.servico || {};
+  const quem = (n) => 'Cad. ' + n;
+  return `Sr. Fiscal, informo a troca de serviço:\n${SUBTIPOS[sv.subtipo]?.rotulo || sv.titulo}${sv.detalhe ? ' (' + sv.detalhe + ')' : ''} de ${dataCurta(sv)}${sv.fim ? ' a ' + ddmm(sv.fim) + ' ' + hhmm(sv.fim) : ''}.\nSai: ${quem(t.deNome)}\nEntra: ${quem(t.paraNome)}${t.motivo ? '\nMotivo: ' + t.motivo : ''}\nAmbos de acordo.`;
+}
+async function compartilharTexto(texto, titulo) {
+  try { if (navigator.share) { await navigator.share({ title: titulo, text: texto }); return; } } catch (e) { if (e.name === 'AbortError') return; }
+  try { await navigator.clipboard.writeText(texto); toast('Texto copiado. Cole no WhatsApp ou e-mail.'); }
+  catch (e) { prompt('Copie o texto:', texto); }
+}
+async function acaoTroca(acao, id) {
+  const t = ui.turma.trocas.find((x) => x.id === id); if (!t) return;
+  try {
+    if (['aceita', 'recusada', 'cancelada'].includes(acao)) {
+      await nuvem.responderTroca(id, acao);
+      if (acao === 'aceita') toast('Troca aceita. Toque em "Pôr na minha agenda" e avise o fiscal.');
+      else toast(acao === 'recusada' ? 'Troca recusada' : 'Troca cancelada');
+      if (acao === 'cancelada' && t.enviada) devolverServico(t);
+    }
+    if (acao === 'apagar') { await nuvem.apagarTroca(id); toast('Apagada'); }
+    if (acao === 'fiscal') return compartilharTexto(textoFiscal(t), 'Troca de serviço');
+    if (acao === 'assumir') {
+      const sv = t.servico;
+      store.salvarMissao({ id: `troca-${t.id}`, titulo: sv.titulo, categoria: sv.categoria || SUBTIPOS[sv.subtipo]?.categoria || 'operacional', subtipo: sv.subtipo, prioridade: 'critico',
+        inicio: sv.inicio, fim: sv.fim, diaTodo: !!sv.diaTodo, local: sv.local || '', detalhe: sv.detalhe || '', obs: `Troca com Cad. ${t.deNome}${t.motivo ? ' · ' + t.motivo : ''}`,
+        lembretes: lembretesPadrao(sv.subtipo, 'critico'), checklist: checklistPadrao(sv.subtipo), escala: null,
+        trocas: [{ em: Date.now(), comQuem: 'Cad. ' + t.deNome, status: 'aprovada', motivo: 'Assumido por troca' }] });
+      toast('Serviço na sua agenda');
+      return renderizar();
+    }
+    if (acao === 'liberar') {
+      const sv = t.servico;
+      if (sv?.chave?.startsWith('ciclo:')) { const [, cid, ini] = sv.chave.split(':'); store.excecaoCiclo(cid, +ini, { tipo: 'pulado', motivo: `Troca com Cad. ${t.paraNome}` }); }
+      else if (sv?.chave) { store.salvarMissao({ id: sv.chave, status: 'pulado' }); store.registrarTroca(sv.chave, { comQuem: 'Cad. ' + t.paraNome, status: 'aprovada', motivo: t.motivo || '' }); }
+      toast('Serviço tirado da sua agenda (fica como trocado)');
+      return renderizar();
+    }
+    ui.turma.carregado = false; carregarTurma();
+  } catch (e) { toast(mensagemErro(e)); }
+}
+function devolverServico(t) {
+  const sv = t.servico;
+  if (sv?.chave?.startsWith('ciclo:')) { const [, cid, ini] = sv.chave.split(':'); const c = store.get().ciclos.find((x) => x.id === cid); if (c?.excecoes?.[ini]?.tipo === 'pulado') store.excecaoCiclo(cid, +ini, null); }
+  else if (sv?.chave) { const m = store.get().missoes.find((x) => x.id === sv.chave); if (m?.status === 'pulado') store.salvarMissao({ id: m.id, status: 'pendente' }); }
+}
+
 /* ============ eventos globais ============ */
 document.addEventListener('click', async (e) => {
   const t = e.target;
   const ir = t.closest('[data-ir]');
-  if (ir) { ui.vista = ir.dataset.ir; renderizar(); scrollTo({ top: 0 }); if (ui.vista === 'ajustes' && ui.conta?.admin) carregarAdmin(); return; }
+  if (ir) { ui.vista = ir.dataset.ir; renderizar(); scrollTo({ top: 0 }); if (ui.vista === 'ajustes' && ui.conta?.admin) carregarAdmin(); if (ui.vista === 'turma') carregarTurma(); return; }
+  const ck = t.closest('[data-ck]');
+  if (ck) { const [id, i] = ck.dataset.ck.split(':'); store.marcarChecklist(id, +i); vibrar(10); return; }
+  const tr = t.closest('[data-troca]'); if (tr) { tr.disabled = true; return acaoTroca(tr.dataset.troca, tr.dataset.id); }
+  const escB = t.closest('[data-escala]'); if (escB) return abrirEscalaPublicada(escB.dataset.escala);
+  const escRm = t.closest('[data-escala-rm]');
+  if (escRm) { if (!confirm('Apagar esta escala publicada?')) return; try { await nuvem.apagarEscala(escRm.dataset.escalaRm); toast('Escala apagada'); ui.turma.carregado = false; carregarTurma(); } catch (err) { toast(mensagemErro(err)); } return; }
+  const avRm = t.closest('[data-aviso-rm]');
+  if (avRm) { try { await nuvem.apagarAviso(avRm.dataset.avisoRm); toast('Aviso apagado'); ui.turma.carregado = false; carregarTurma(); } catch (err) { toast(mensagemErro(err)); } return; }
+  const ctRm = t.closest('[data-contato-rm]');
+  if (ctRm) { const l = [...(store.get().config.contatos || [])]; l.splice(+ctRm.dataset.contatoRm, 1); store.setConfig({ contatos: l }); return; }
+  const rn = t.closest('[data-relnav]');
+  if (rn) { const k = +rn.dataset.relnav, r = ui.rel.ref; ui.rel.ref = ui.rel.modo === 'mes' ? new Date(r.getFullYear(), r.getMonth() + k, 1) : new Date(r.getFullYear() + k, 0, 1); renderizar(); return; }
+  const rmd = t.closest('[data-relmodo]'); if (rmd) { ui.rel.modo = rmd.dataset.relmodo; renderizar(); return; }
   const adm = t.closest('[data-adm]');
   if (adm) {
     const acao = adm.dataset.adm;
     let email = adm.dataset.email;
     if (acao === 'atualizar') { ui.adm = null; renderAjustes(); return carregarAdmin(); }
+    if (acao === 'stats') {
+      adm.disabled = true;
+      try { ui.stats = await nuvem.estatisticas(); } catch (err) { ui.stats = { erro: mensagemErro(err) }; }
+      return renderAjustes();
+    }
     if (acao === 'liberar-novo') {
       email = ($('#adm-email').value || '').trim().toLowerCase();
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { ui.admErro = 'Digite um e-mail válido.'; return renderAjustes(); }
@@ -737,6 +1286,8 @@ document.addEventListener('click', async (e) => {
       if (acao === 'liberar' || acao === 'liberar-novo') { await definirAcesso(email, true); toast(`${email} liberado`); }
       if (acao === 'bloquear') { await definirAcesso(email, false); toast(`${email} bloqueado`); }
       if (acao === 'remover') { await removerAcesso(email); toast(`${email} apagado da lista`); }
+      if (acao === 'escalante') { await definirPapel(email, 'escalante'); toast(`${email} agora é escalante`); }
+      if (acao === 'tirar-escalante') { await definirPapel(email, ''); toast(`${email} deixou de ser escalante`); }
       ui.admErro = '';
     } catch (err) { ui.admErro = mensagemErro(err); }
     return carregarAdmin();
@@ -779,6 +1330,76 @@ document.addEventListener('click', async (e) => {
     case 'limpar-nao': ui.confirmarLimpar = false; renderizar(); break;
     case 'limpar-sim': ui.confirmarLimpar = false; removerHistorico(ac.dataset.chaves.split('|').filter(Boolean)); break;
     case 'salvar-nome': store.setConfig({ nome: $('#aj-nome').value.trim() || 'Cadete' }); toast('Nome salvo'); break;
+    case 'salvar-nomes': store.setConfig({ nomeCompleto: $('#aj-ncompleto').value.trim(), nomeGuerra: $('#aj-nguerra').value.trim() }); toast('Nomes salvos'); break;
+    case 'importar-pdf': abrirImportar('importar'); break;
+    case 'publicar-escala': abrirImportar('publicar'); break;
+    case 'add-contato': {
+      const nome = $('#aj-ct-nome').value.trim(), tel = $('#aj-ct-tel').value.trim();
+      if (!nome || !tel) { toast('Preencha nome e telefone'); break; }
+      store.setConfig({ contatos: [...(store.get().config.contatos || []), { nome, tel }] }); toast('Contato salvo'); break;
+    }
+    case 'nova-prova': ui.diaAlvo = inicioDoDia(Date.now()); abrirMissao(null, { modelo: MODELOS.find((m) => m.id === 'prova'), dia: Date.now() }); break;
+    case 'compartilhar-rel': compartilharTexto(ui.relTexto || '', 'Relatório de serviços'); break;
+    case 'ativar-sinc': {
+      const senha = $('#aj-senha').value;
+      if (!senha) { ui.senhaErro = 'Digite a senha.'; renderAjustes(); break; }
+      ac.disabled = true; ac.textContent = 'Aguarde…';
+      try { const r = await nuvem.ativarComSenha(senha); ui.senhaErro = ''; toast(r === 'ok' ? 'Sincronização ligada' : r === 'chave-diferente' ? 'A cópia na nuvem usa outra senha' : 'Chave criada; sincroniza quando houver internet'); }
+      catch (err) { ui.senhaErro = err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password' ? 'Senha incorreta.' : mensagemErro(err); }
+      renderAjustes(); break;
+    }
+    case 'sincronizar': { ac.disabled = true; const r = await nuvem.sincronizar(); toast(r === 'ok' ? 'Sincronizado' : r === 'offline' ? 'Sem internet agora' : r === 'sem-chave' ? 'Confirme a senha para ligar' : 'Não foi possível sincronizar'); renderAjustes(); break; }
+    case 'substituir-cofre': if (confirm('Substituir a cópia da nuvem pela agenda deste aparelho?')) { const r = await nuvem.substituirCofre(); toast(r === 'ok' ? 'Cópia substituída' : 'Não foi possível'); renderAjustes(); } break;
+    case 'ligar-push': {
+      ac.disabled = true; ac.textContent = 'Aguarde…';
+      try { await nuvem.ativarPush(); toast('Avisos com o app fechado ligados'); }
+      catch (err) { toast(err.code === 'sem-chave' ? 'Ligue a sincronização (abaixo) antes.' : err.message || 'Não foi possível ligar'); }
+      renderAjustes(); break;
+    }
+    case 'desligar-push': await nuvem.desativarPush(); toast('Avisos com o app fechado desligados'); renderAjustes(); break;
+    case 'testar-aviso': {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      if (reg && Notification.permission === 'granted') reg.showNotification('Agenda do Cadete', { body: 'Os avisos estão funcionando neste aparelho.', icon: 'icon-192.png', tag: 'teste' });
+      else toast('Avisos não autorizados neste aparelho');
+      break;
+    }
+    case 'gcal-sinc': {
+      ac.disabled = true; ac.textContent = 'Sincronizando…';
+      const k = `agenda-cadete:gcal:${ui.conta?.uid || 'local'}`;
+      let info = null; try { info = JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) {}
+      try {
+        const agora = Date.now();
+        const itens = itensNoIntervalo(agora - DIA, agora + 60 * DIA).filter((i) => i.status === 'pendente');
+        const r = await sincronizarAgenda(itens, (i) => SUBTIPOS[i.subtipo]?.rotulo || '', info?.ids || []);
+        localStorage.setItem(k, JSON.stringify({ em: Date.now(), ids: r.ids }));
+        toast(`Google Agenda: ${r.criados} novos, ${r.atualizados} atualizados, ${r.apagados} removidos`);
+      } catch (err) { toast(err.message || 'Falha ao sincronizar com o Google'); }
+      renderAjustes(); break;
+    }
+    case 'gcal-sair': gcalDesconectar(); try { localStorage.removeItem(`agenda-cadete:gcal:${ui.conta?.uid || 'local'}`); } catch (e) {} toast('Google Agenda desconectado (os eventos já criados continuam lá)'); renderAjustes(); break;
+    case 'turma-atualizar': ui.turma.carregado = false; renderTurma(); break;
+    case 'editar-perfil': ui.turma.editarPerfil = true; renderTurma(); break;
+    case 'cancelar-perfil': ui.turma.editarPerfil = false; renderTurma(); break;
+    case 'salvar-perfil': {
+      const dados = { nome: $('#pf-nome').value, nomeGuerra: $('#pf-guerra').value, turma: $('#pf-turma').value, participar: true };
+      if (!dados.nome.trim() || !dados.nomeGuerra.trim() || !dados.turma.trim()) { toast('Preencha nome, nome de guerra e turma'); break; }
+      ac.disabled = true;
+      try {
+        ui.turma.perfil = await nuvem.salvarPerfil(dados); ui.turma.editarPerfil = false;
+        store.setConfig({ nomeCompleto: store.get().config.nomeCompleto || dados.nome.trim(), nomeGuerra: store.get().config.nomeGuerra || dados.nomeGuerra.trim(), turma: dados.turma.trim() });
+        toast('Perfil da turma salvo');
+      } catch (err) { toast(err.code === 'sem-chave' ? 'Ative a sincronização em Ajustes primeiro (ela cria a sua chave).' : mensagemErro(err)); }
+      renderTurma(); break;
+    }
+    case 'sair-turma': if (confirm('Sair da turma? Colegas não poderão mais pedir trocas a você.')) { try { await nuvem.salvarPerfil({ participar: false }); ui.turma.perfil = null; toast('Você saiu da turma'); } catch (err) { toast(mensagemErro(err)); } renderTurma(); } break;
+    case 'publicar-aviso': {
+      const titulo = $('#av-titulo').value.trim();
+      if (!titulo) { toast('Escreva o título do aviso'); break; }
+      ac.disabled = true;
+      try { await nuvem.publicarAviso(titulo, $('#av-texto').value, $('#av-imp').checked); toast('Aviso publicado'); ui.turma.carregado = false; carregarTurma(); }
+      catch (err) { ac.disabled = false; toast(mensagemErro(err)); }
+      break;
+    }
     case 'notificar': await pedirAvisos(); break;
     case 'instalar': if (ui.instalar) { ui.instalar.prompt(); await ui.instalar.userChoice.catch(() => {}); ui.instalar = null; renderizar(); } break;
     case 'backup': baixar(`agenda-cadete-backup-${paraData(Date.now())}.json`, store.exportar(), 'application/json'); toast('Backup baixado'); break;
@@ -793,6 +1414,11 @@ document.addEventListener('click', async (e) => {
   }
 });
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'nt-min') {
+    const v = parseFloat(e.target.value.replace(',', '.'));
+    if (v >= 0 && v <= 10) { clearTimeout(ui.tMin); ui.tMin = setTimeout(() => { store.setConfig({ mediaMinima: v }); const el = $('#nt-min'); el?.focus(); }, 500); }
+    return;
+  }
   if (e.target.id === 'm-busca') {
     ui.mis.busca = e.target.value;
     const pos = e.target.selectionStart;
@@ -825,14 +1451,16 @@ async function pedirAvisos() {
 async function verificarLembretes() {
   const agora = Date.now();
   const vencidos = lembretesVencidos(agora);
+  // modo "em serviço": só o que é crítico toca; o resto chega em silêncio
+  const emServico = vencidos.length && emServicoAgora(agora).length > 0;
   for (const { it, min, chave } of vencidos) {
-    const titulo = `${SUBTIPOS[it.subtipo]?.rotulo || 'Missão'} em ${rotuloAntecedencia(min)}`;
-    const corpo = [it.titulo, it.diaTodo ? rotuloDia(it.inicio, agora) : `${rotuloDia(it.inicio, agora)} às ${hhmm(it.inicio)}`, it.local].filter(Boolean).join(' · ');
+    const { titulo, corpo } = textoLembrete(it, min);
+    const silencioso = emServico && it.prioridade !== 'critico';
     let mostrou = false;
     if ('Notification' in window && Notification.permission === 'granted') {
       try {
         const reg = await navigator.serviceWorker?.getRegistration();
-        if (reg) await reg.showNotification(titulo, { body: corpo, tag: chave, icon: 'icon-192.png', badge: 'icon-192.png', data: { chave: it.chave }, requireInteraction: it.prioridade === 'critico' });
+        if (reg) await reg.showNotification(titulo, { body: corpo, tag: chave, icon: 'icon-192.png', badge: 'icon-192.png', data: { chave: it.chave }, requireInteraction: it.prioridade === 'critico' && !silencioso, silent: silencioso });
         else new Notification(titulo, { body: corpo, tag: chave, icon: 'icon-192.png' });
         mostrou = true;
       } catch (e) { /* cai no aviso interno */ }
@@ -846,6 +1474,7 @@ let ultimoMinuto = -1;
 function tique() {
   const agora = Date.now();
   if (ui.vista === 'painel' && !$('#contagem').hidden) renderContagem(agora);
+  $$('[data-cd-fim]').forEach((el) => { el.textContent = contagem(Math.max(0, +el.dataset.cdFim - agora)); });
   const minuto = Math.floor(agora / 60000);
   if (minuto !== ultimoMinuto) {
     ultimoMinuto = minuto;
@@ -866,22 +1495,51 @@ navigator.serviceWorker?.addEventListener('message', (e) => {
 
 // atalho do ícone (ex.: ./#escalas) abre direto na aba
 const hashInicial = location.hash.replace('#', '');
-if (['painel', 'escalas', 'missoes', 'ajustes'].includes(hashInicial)) ui.vista = hashInicial;
+if (['painel', 'escalas', 'missoes', 'turma', 'ajustes'].includes(hashInicial)) ui.vista = hashInicial;
+// aviso tocado com o app fechado: ./#abrir=<chave>
+const abrirAoIniciar = hashInicial.startsWith('abrir=') ? decodeURIComponent(hashInicial.slice(6)) : '';
+
+/** Próximos lembretes (7 dias) para o disparo com o app fechado. */
+function proximosLembretes() {
+  const agora = Date.now(), ate = agora + 7 * DIA, out = [];
+  for (const it of proximas(agora)) {
+    const ancora = it.diaTodo ? it.inicio + 8 * 3600000 : it.inicio;
+    for (const min of it.lembretes || []) {
+      const dispara = ancora - min * 60000;
+      if (dispara <= agora + 60000 || dispara > ate) continue;
+      const { titulo, corpo } = textoLembrete(it, min);
+      out.push({ dispara, titulo, corpo, chave: it.chave, tag: `${it.chave}@${min}`, critico: it.prioridade === 'critico' });
+    }
+  }
+  return out.sort((a, b) => a.dispara - b.dispara);
+}
 
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker não registrado', e)));
 }
 
 /** Abre o app (depois do portão de acesso, quando ele está configurado). */
-function iniciarApp(conta) {
-  if (conta) { usarConta(conta.uid); ui.conta = conta; }
+async function iniciarApp(conta) {
+  if (conta) { usarConta(conta.uid); ui.conta = { ...conta, papel: papelDaConta(conta.uid) }; }
   ui.iniciado = true;
   store.assinar(() => renderizar());
   aplicarTema();
+  $('#aba-turma').hidden = !temNuvem();
   renderizar();
   if (ui.conta?.admin && ui.vista === 'ajustes') carregarAdmin();
   setInterval(tique, 1000);
   verificarLembretes();
   pedirArmazenamentoPersistente();
+  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); const it = acharItem(abrirAoIniciar); if (it) abrirAoIniciar.startsWith('ciclo:') ? abrirPlantao(abrirAoIniciar) : abrirMissao(abrirAoIniciar); }
+  if (temNuvem()) {
+    await aguardarChave(); // a chave do cofre nasce da senha digitada no login
+    nuvem.definirFonteLembretes(proximosLembretes);
+    nuvem.aoMudarNuvem(() => { if (ui.vista === 'ajustes' && !document.activeElement?.closest?.('#v-ajustes input')) renderAjustes(); });
+    nuvem.iniciarNuvem(ui.conta);
+    let tPush = null;
+    store.assinar(() => { clearTimeout(tPush); tPush = setTimeout(() => nuvem.atualizarPush().catch(() => {}), 6000); });
+    carregarTurma();
+    setInterval(() => { if (document.visibilityState === 'visible') { ui.turma.carregado = ui.vista === 'turma' ? ui.turma.carregado : false; carregarTurma(); } }, 10 * 60000);
+  }
 }
 iniciarPortao(iniciarApp);
