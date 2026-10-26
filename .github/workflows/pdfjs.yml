@@ -1,0 +1,29 @@
+name: Atualizar pdf.js (vendor)
+
+# Copia o pdf.js (leitor de PDF usado na importação de escalas) para a pasta vendor/,
+# para o app ler PDFs mesmo sem a CDN. Rode manualmente em Actions → "Run workflow".
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Baixar pdfjs-dist
+        run: |
+          npm pack pdfjs-dist@4.10.38 --silent
+          tar xzf pdfjs-dist-4.10.38.tgz
+          mkdir -p vendor
+          cp package/legacy/build/pdf.min.mjs package/legacy/build/pdf.worker.min.mjs vendor/
+          cp package/LICENSE vendor/LICENSE-pdfjs.txt
+          rm -rf package pdfjs-dist-4.10.38.tgz
+      - name: Gravar no repositório
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add vendor
+          git diff --cached --quiet && echo "Nada mudou" || (git commit -m "pdf.js 4.10.38 em vendor/" && git push)
