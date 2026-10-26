@@ -1,0 +1,32 @@
+name: Lembretes (app fechado)
+
+# Envia os avisos agendados pelos aparelhos (Firebase Cloud Messaging).
+# Precisa do segredo FIREBASE_SERVICE_ACCOUNT (Settings → Secrets and variables → Actions).
+# Sem o segredo, a rotina só avisa que não está configurada e termina.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: lembretes
+  cancel-in-progress: false
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TEM_CONTA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Instalar firebase-admin
+        if: env.TEM_CONTA == 'true'
+        run: npm install --no-save --no-audit --no-fund firebase-admin@12
+      - name: Enviar lembretes vencidos
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: node scripts/enviar-lembretes.mjs
