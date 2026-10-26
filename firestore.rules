@@ -18,7 +18,7 @@ service cloud.firestore {
 
     // Lista de acessos: cada pessoa lê só o próprio status; só o admin altera.
     match /acessos/{email} {
-      allow read: if admin() || eu(email);
+      allow get: if admin() || eu(email);
       allow list, write: if admin();
     }
 
@@ -26,7 +26,7 @@ service cloud.firestore {
     match /pedidos/{email} {
       allow create: if eu(email) && request.resource.data.keys().hasOnly(['email', 'criadoEm'])
                     && request.resource.data.email == email;
-      allow read: if admin() || eu(email);
+      allow get: if admin() || eu(email);
       allow list, delete: if admin();
     }
 

@@ -97,6 +97,8 @@ async function avaliar(user, aoLiberar) {
   if (!user) { if (liberado) return location.reload(); return ir('entrar'); }
   if (!user.emailVerified) return ir('verificar', user);
   ir('carregando');
+  // renova o token para as regras já enxergarem o e-mail confirmado (offline, segue com o atual)
+  try { await user.getIdToken(true); } catch (e) { /* sem internet */ }
   let s;
   try { s = await situacao(user); }
   catch (e) { return ir('semRede'); }
