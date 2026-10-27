@@ -14,9 +14,10 @@
  */
 import { carregar, confirmarSenha } from './acesso.js';
 import { store } from './store.js';
+import { listarDocs, removidosDocs, gravarDocs, mesclarDocs } from './documentos.js';
 import { chaveDaConta, guardarChaveDaSenha, cifrar, decifrar, novoPar, guardarPar, lerPar, chaveComum } from './cripto.js';
 
-export const VERSAO_APP = '2.5.0';
+export const VERSAO_APP = '2.6.0';
 let conta = null; // { uid, email, admin, papel }
 const ouvintes = new Set();
 const status = { cofre: 'desligado', ultimaSinc: 0, erro: '', push: 'desligado' };
@@ -33,6 +34,12 @@ export function iniciarNuvem(c) {
   status.ultimaSinc = lerLocal(`agenda-cadete:sinc:${c.uid}`, 0);
   store.assinar(() => agendarSincronizacao());
   window.addEventListener('online', () => sincronizar());
+  // traz o que foi feito em outro aparelho: ao voltar para o app e a cada 2 min com ele aberto
+  let ultimaVolta = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && Date.now() - ultimaVolta > 20000) { ultimaVolta = Date.now(); sincronizar(); }
+  });
+  setInterval(() => { if (document.visibilityState === 'visible') sincronizar(); }, 2 * 60000);
   sincronizar();
   registrarAtividade();
 }
@@ -44,6 +51,26 @@ export function agendarSincronizacao() {
   clearTimeout(timerSinc);
   timerSinc = setTimeout(() => sincronizar(), 4000);
 }
+
+/* Escalas completas (consulta) vão compactadas junto com a agenda criptografada. */
+const b64 = (u8) => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+async function compactar(obj) {
+  const txt = JSON.stringify(obj);
+  if (typeof CompressionStream === 'undefined') return { json: txt };
+  const buf = await new Response(new Blob([txt]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+  return { gz: b64(new Uint8Array(buf)) };
+}
+async function descompactar(p) {
+  if (!p) return null;
+  if (p.json) return JSON.parse(p.json);
+  if (p.gz && typeof DecompressionStream !== 'undefined') {
+    const bin = Uint8Array.from(atob(p.gz), (c) => c.charCodeAt(0));
+    return JSON.parse(await new Response(new Blob([bin]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
+  }
+  return null;
+}
+let aoReceberDocs = () => {};
+export const definirAoReceberDocs = (f) => { aoReceberDocs = f; };
 
 /** Estado enviado: a agenda inteira (o tema fica de cada aparelho). */
 const paraEnviar = () => store.get();
@@ -64,20 +91,31 @@ export async function sincronizar({ forcarEnvio = false } = {}) {
       const ref = fs.doc(db, 'cofres', conta.uid);
       const snap = await fs.getDoc(ref);
       let par = await lerPar(conta.uid);
-      let remotoTxt = '';
+      let remotoTxt = '', remotoDocs = null;
       if (snap.exists() && !forcarEnvio) {
         let conteudo;
         try { conteudo = await decifrar(chave, snap.data()); }
         catch (e) { status.cofre = 'chave-diferente'; avisar(); return 'chave-diferente'; }
         if (conteudo.par) { par = conteudo.par; await guardarPar(conta.uid, par); }
         remotoTxt = JSON.stringify(conteudo.estado);
+        remotoDocs = conteudo.docs || null;
         ignorarProxima = true;
         if (!store.mesclar(conteudo.estado)) ignorarProxima = false;
       }
       if (!par) { par = await novoPar(); await guardarPar(conta.uid, par); }
       const local = paraEnviar();
-      if (forcarEnvio || JSON.stringify(local) !== remotoTxt || !snap.data()?.temPar) {
-        const cifra = await cifrar(chave, { estado: local, par });
+      // escalas completas: junta as daqui com as da nuvem
+      const docsAqui = listarDocs(conta.uid), rmAqui = removidosDocs(conta.uid);
+      let docsNuvem = [], rmNuvem = {};
+      try { const r = await descompactar(remotoDocs); if (r) { docsNuvem = r.docs || []; rmNuvem = r.removidos || {}; } } catch (e) { /* cópia antiga sem escalas */ }
+      const juntos = mesclarDocs(docsAqui, docsNuvem, rmAqui, rmNuvem);
+      const assinatura = (l, rm) => JSON.stringify([l.map((d) => d.id + ':' + d.importadoEm), rm]);
+      if (assinatura(juntos.docs, juntos.removidos) !== assinatura(docsAqui, rmAqui)) { gravarDocs(conta.uid, juntos.docs, juntos.removidos); aoReceberDocs(); }
+      const docsMudaram = assinatura(juntos.docs, juntos.removidos) !== assinatura(docsNuvem, rmNuvem);
+      if (forcarEnvio || docsMudaram || JSON.stringify(local) !== remotoTxt || !snap.data()?.temPar) {
+        let cifra = await cifrar(chave, { estado: local, par, docs: await compactar(juntos) });
+        // limite do documento no Firebase: se passar, leva só as escalas mais recentes
+        for (const n of [8, 3, 0]) { if (cifra.dados.length < 880000) break; cifra = await cifrar(chave, { estado: local, par, docs: await compactar({ docs: juntos.docs.slice(0, n), removidos: juntos.removidos }) }); }
         await fs.setDoc(ref, { ...cifra, temPar: true, atualizadoEm: fs.serverTimestamp() });
       }
       status.cofre = 'ok'; status.erro = ''; status.ultimaSinc = Date.now();

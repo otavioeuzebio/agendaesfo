@@ -35,3 +35,13 @@ test('nunca guarda CPF, mesmo colado ao nome', () => {
   assert.ok(!/\d{3}\.\d{3}\.\d{3}-\d{2}/.test(txt));
   assert.equal(listarDocs('u3')[0].linhas[0].nome, 'Fulano Teste');
 });
+
+test('junta escalas de dois aparelhos: mais nova vence e apagada some', async () => {
+  const { mesclarDocs } = await import('../documentos.js');
+  const a = [{ id: 'x', importadoEm: 10, titulo: 'velha' }, { id: 'y', importadoEm: 5 }];
+  const b = [{ id: 'x', importadoEm: 20, titulo: 'nova' }, { id: 'z', importadoEm: 7 }];
+  const r = mesclarDocs(a, b, {}, { y: Date.now() });
+  assert.deepEqual(r.docs.map((d) => d.id).sort(), ['x', 'z']);
+  assert.equal(r.docs.find((d) => d.id === 'x').titulo, 'nova');
+  assert.ok(r.removidos.y);
+});

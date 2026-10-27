@@ -18,8 +18,37 @@ const chave = (uid) => `agenda-cadete:docs:${uid || 'local'}`;
 export function listarDocs(uid) {
   try { return JSON.parse(localStorage.getItem(chave(uid)) || '[]'); } catch (e) { return []; }
 }
+const chaveRm = (uid) => `agenda-cadete:docsrm:${uid || 'local'}`;
+export function removidosDocs(uid) {
+  try { return JSON.parse(localStorage.getItem(chaveRm(uid)) || '{}'); } catch (e) { return {}; }
+}
 export function apagarDoc(uid, id) {
-  try { localStorage.setItem(chave(uid), JSON.stringify(listarDocs(uid).filter((d) => d.id !== id))); } catch (e) { /* sem espaço */ }
+  try {
+    localStorage.setItem(chave(uid), JSON.stringify(listarDocs(uid).filter((d) => d.id !== id)));
+    localStorage.setItem(chaveRm(uid), JSON.stringify({ ...removidosDocs(uid), [id]: Date.now() }));
+  } catch (e) { /* sem espaço */ }
+}
+/** Grava a lista inteira (usado ao juntar com a cópia da nuvem). */
+export function gravarDocs(uid, lista, removidos) {
+  try {
+    localStorage.setItem(chave(uid), JSON.stringify(lista.slice(0, MAX)));
+    if (removidos) localStorage.setItem(chaveRm(uid), JSON.stringify(removidos));
+  } catch (e) { /* sem espaço */ }
+}
+/**
+ * Junta os documentos deste aparelho com os da nuvem: fica a versão mais nova
+ * de cada um, e o que foi apagado em qualquer aparelho some dos dois.
+ */
+export function mesclarDocs(a = [], b = [], rmA = {}, rmB = {}) {
+  const removidos = { ...rmA };
+  for (const [k, t] of Object.entries(rmB || {})) removidos[k] = Math.max(removidos[k] || 0, t);
+  const limite = Date.now() - 120 * 86400000;
+  for (const k in removidos) if (removidos[k] < limite) delete removidos[k];
+  const mapa = new Map();
+  for (const d of [...a, ...b]) { const x = mapa.get(d.id); if (!x || (d.importadoEm || 0) > (x.importadoEm || 0)) mapa.set(d.id, d); }
+  const docs = [...mapa.values()].filter((d) => !(removidos[d.id] >= (d.importadoEm || 0)))
+    .sort((x, y) => (y.importadoEm || 0) - (x.importadoEm || 0)).slice(0, MAX);
+  return { docs, removidos };
 }
 /** Guarda (ou substitui) um documento. Devolve o id. */
 export function guardarDoc(uid, doc) {

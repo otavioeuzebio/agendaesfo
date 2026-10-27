@@ -180,6 +180,12 @@ function cartaoEmServico(it, agora) {
 }
 
 /* ---- Escalas completas (todos os cadetes) ---- */
+/** Guarda o documento e manda para os outros aparelhos (junto da agenda criptografada). */
+function guardarDocSinc(doc) {
+  const id = guardarDoc(ui.conta?.uid, doc);
+  if (temNuvem()) nuvem.agendarSincronizacao();
+  return id;
+}
 /** Documentos para consulta: os PDFs lidos neste aparelho + as escalas publicadas na turma. */
 function docsConsulta() {
   const locais = listarDocs(ui.conta?.uid).map((d) => ({ ...d, origem: 'aparelho' }));
@@ -401,6 +407,8 @@ function renderPainel(agora) {
   const recebidas = ui.turma.trocas.filter((t) => !t.enviada && t.status === 'pendente').length;
   if (recebidas) avisos.push(`<div class="aviso"><p>${recebidas === 1 ? 'Um colega pediu' : recebidas + ' pedidos de'} troca de serviço para você.</p><button class="btn pri" type="button" data-ir="turma">Responder</button></div>`);
   const cfgP = store.get().config;
+  if (temNuvem() && ['sem-chave', 'chave-diferente'].includes(nuvem.statusNuvem().cofre))
+    avisos.push(`<div class="aviso" style="border-color:var(--p-importante)"><p><b>Sincronização desligada neste aparelho.</b> O que você importa no PC ou no celular não passa para o outro até ligar.</p><button class="btn pri" type="button" data-ir="ajustes">Ligar agora</button></div>`);
   const alertaGel = alimentosEmAlerta(cfgP, agora);
   if (alertaGel.length) avisos.push(`<div class="aviso gel"><p><b>Geladeira:</b> ${alertaGel.slice(0, 3).map((a) => `${esc(a.item)} · ${ROTULO_ALIMENTO[a.estado].toLowerCase()}`).join('; ')}${alertaGel.length > 3 ? '…' : ''}</p><button class="btn" type="button" data-ir-rotina>Ver geladeira</button></div>`);
   if (store.falhouGravar()) avisos.push(`<div class="aviso" style="border-color:var(--danger)"><p>O navegador recusou salvar os dados. Libere espaço ou saia da navegação anônima e faça um backup em Ajustes.</p></div>`);
@@ -1483,7 +1491,7 @@ async function lerPdfEscolhido(arquivo) {
       const doc = EXT.lerDocumento(extra, itens);
       if (!doc.semTexto && !doc.linhas.length) throw new Error(`Não encontrei a tabela da ${EXT.NOMES_DOC[extra]} neste PDF.`);
       Object.assign(ui.imp, { etapa: 'resultado', tipo: extra, doc, linhas: doc.linhas, origem: 'pdf', funcao: '', funcaoOutra: '', sexta: '' });
-      if (TIPOS_CONSULTA[extra] && doc.linhas.length) ui.imp.docId = guardarDoc(ui.conta?.uid, { tipo: extra, titulo: doc.titulo, linhas: doc.linhas, numero: doc.numero, meta: { evento: doc.evento, local: doc.local, fardamento: doc.fardamento } });
+      if (TIPOS_CONSULTA[extra] && doc.linhas.length) ui.imp.docId = guardarDocSinc({ tipo: extra, titulo: doc.titulo, linhas: doc.linhas, numero: doc.numero, meta: { evento: doc.evento, local: doc.local, fardamento: doc.fardamento } });
       desenharImportar();
       return;
     }
@@ -1492,7 +1500,7 @@ async function lerPdfEscolhido(arquivo) {
     const linhas = tipo === 'interna' ? pdf.lerEscalaInterna(itens) : pdf.lerEscalaRotina(itens, new Date());
     if (!linhas.length) throw new Error('Não encontrei a tabela da escala neste PDF.');
     Object.assign(ui.imp, { etapa: 'resultado', tipo, linhas, origem: 'pdf' });
-    ui.imp.docId = guardarDoc(ui.conta?.uid, { tipo, titulo: tituloEscala(ui.imp), linhas });
+    ui.imp.docId = guardarDocSinc({ tipo, titulo: tituloEscala(ui.imp), linhas });
   } catch (e) {
     console.error(e);
     Object.assign(ui.imp, { etapa: 'erro', erro: e.message?.startsWith('Não') ? e.message : 'Não foi possível ler este PDF.' });
@@ -1541,7 +1549,7 @@ $('#importar-corpo').addEventListener('click', async (e) => {
     ui.vista = 'qts'; renderizar(); toast(`QTS da semana ${imp.qts.semana} salvo`);
   }
   if (b.dataset.imp === 'ver-todos') {
-    if (!imp.docId) imp.docId = guardarDoc(ui.conta?.uid, { tipo: imp.tipo, titulo: imp.doc?.titulo || imp.nomeArquivo || tituloEscala(imp), linhas: imp.linhas, numero: imp.doc?.numero, meta: imp.doc ? { evento: imp.doc.evento, local: imp.doc.local, fardamento: imp.doc.fardamento } : {} });
+    if (!imp.docId) imp.docId = guardarDocSinc({ tipo: imp.tipo, titulo: imp.doc?.titulo || imp.nomeArquivo || tituloEscala(imp), linhas: imp.linhas, numero: imp.doc?.numero, meta: imp.doc ? { evento: imp.doc.evento, local: imp.doc.local, fardamento: imp.doc.fardamento } : {} });
     fecharFolha('#dlg-importar');
     ui.todos = { doc: imp.docId, busca: '', data: '' };
     ui.vista = 'escalas'; ui.esc.todos = true; renderizar();
@@ -1809,7 +1817,7 @@ document.addEventListener('click', async (e) => {
     case 'esc-todos': ui.esc.todos = true; renderizar(); break;
     case 'esc-minha': ui.esc.todos = false; renderizar(); break;
     case 'td-eu': ui.todos.busca = store.get().config.nomeGuerra || store.get().config.nomeCompleto || ''; renderizar(); break;
-    case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
+    case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); if (temNuvem()) nuvem.agendarSincronizacao(); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
     case 'revista-pronta': { const r = revistaDoDia(store.get().config, Date.now()); store.setConfig({ revistaHoje: { data: r.dia, ok: r.itens.map((_, i) => i), feita: true } }); vibrar(25); toast('Revista pronta. Bom dia!'); break; }
     case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
     case 'rv-padrao': { const { itens, ...resto } = store.get().config.revista || {}; store.setConfig({ revista: resto }); toast('Itens padrão restaurados'); break; }
@@ -2083,6 +2091,8 @@ async function iniciarApp(conta) {
   if (temNuvem()) {
     await aguardarChave(); // a chave do cofre nasce da senha digitada no login
     nuvem.definirFonteLembretes(proximosLembretes);
+    nuvem.definirAoReceberDocs(() => { if (ui.vista === 'escalas' && ui.esc.todos) renderizar(); });
+    nuvem.aoMudarNuvem(() => { if (ui.vista === 'painel') renderizar(); });
     nuvem.aoMudarNuvem(() => { if (ui.vista === 'ajustes' && !document.activeElement?.closest?.('#v-ajustes input')) renderAjustes(); });
     nuvem.iniciarNuvem(ui.conta);
     let tPush = null;
