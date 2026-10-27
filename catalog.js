@@ -20,12 +20,17 @@ export const SUBTIPOS = {
     guarda: { rotulo: 'Serviço de guarda', categoria: 'operacional', icone: 'shield' },
     oficial_dia: { rotulo: 'Oficial de dia', categoria: 'operacional', icone: 'star' },
     escala_outro: { rotulo: 'Outra escala', categoria: 'operacional', icone: 'time' },
+    representacao: { rotulo: 'Representação', categoria: 'operacional', icone: 'star' },
     prova: { rotulo: 'Prova', categoria: 'academico', icone: 'create' },
     trabalho: { rotulo: 'Trabalho', categoria: 'academico', icone: 'document-attach' },
     seminario: { rotulo: 'Seminário', categoria: 'academico', icone: 'people' },
     aula: { rotulo: 'Instrução / aula', categoria: 'academico', icone: 'book' },
     documento: { rotulo: 'Documento / requerimento', categoria: 'administrativo', icone: 'folder-open' },
     formatura: { rotulo: 'Formatura / apresentação', categoria: 'administrativo', icone: 'flag' },
+    desfile: { rotulo: 'Desfile', categoria: 'administrativo', icone: 'flag' },
+    funcao_comando: { rotulo: 'Função de comando', categoria: 'administrativo', icone: 'star' },
+    suplencia: { rotulo: 'Suplência de comando', categoria: 'administrativo', icone: 'star' },
+    mce: { rotulo: 'MCE (medida corretiva)', categoria: 'administrativo', icone: 'time' },
     cafe_instrutores: { rotulo: 'Café dos Instrutores', categoria: 'rotina', icone: 'cafe' },
     copa: { rotulo: 'Copa', categoria: 'rotina', icone: 'brush' },
     viaturas_pm: { rotulo: 'Viaturas PM', categoria: 'rotina', icone: 'car' },
@@ -43,7 +48,7 @@ export const PRIORIDADES = {
 };
 export const subtiposDe = (c) => Object.keys(SUBTIPOS).filter((s) => SUBTIPOS[s].categoria === c);
 /** Subtipos que contam como "dia de serviço" no calendário de escalas. */
-export const SUBTIPOS_ESCALA = ['respondente', 'cmt_guarda', 'sentinela_guarda', 'sentinela_posto2', 'dia_esfo', 'cmt_bloco3', 'plantao_rondante', 'plantao_bloco3', 'sobreaviso', 'estagio_cpu', 'escala_especial', 'guarda', 'oficial_dia', 'escala_outro'];
+export const SUBTIPOS_ESCALA = ['respondente', 'cmt_guarda', 'sentinela_guarda', 'sentinela_posto2', 'dia_esfo', 'cmt_bloco3', 'plantao_rondante', 'plantao_bloco3', 'sobreaviso', 'estagio_cpu', 'escala_especial', 'guarda', 'oficial_dia', 'escala_outro', 'representacao'];
 /** Opções de antecedência oferecidas na tela de cadastro (minutos). */
 export const OPCOES_LEMBRETE = [
     { min: 2880, rotulo: '2 dias' },

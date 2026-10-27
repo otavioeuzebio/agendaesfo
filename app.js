@@ -15,7 +15,7 @@ import { store, novoId, pedirArmazenamentoPersistente, usarConta } from './store
 import { iniciarPortao, sairDaConta, aguardarChave } from './portao.js';
 import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel, papelDaConta } from './acesso.js';
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
-import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, SUBTIPOS_AVALIACAO, linhasParaMissoes } from './extras.js';
+import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
 import { gcalConfigurado, sincronizarAgenda, desconectar as gcalDesconectar } from './gcal.js';
 import { gerarICS, baixar } from './ics.js';
@@ -95,7 +95,7 @@ function acharItem(chave) {
 
 /* ============ 2. trechos reutilizáveis ============ */
 function horario(it) {
-  if (it.diaTodo) return 'Dia todo';
+  if (it.diaTodo) return it.fim && !mesmoDia(it.inicio, it.fim) ? `Até ${ddmm(it.fim)}` : 'Dia todo';
   let t = hhmm(it.inicio);
   if (it.fim) t += ` → ${mesmoDia(it.inicio, it.fim) ? '' : ddmm(it.fim) + ' '}${hhmm(it.fim)}`;
   return t;
@@ -136,6 +136,11 @@ function chip({ rotulo, cor, ativo, dados, peq }) {
 /** "sex 30/10 às 19:00" — data absoluta (serve também para avisos que chegam depois). */
 const dataCurta = (it) => `${DIAS_CURTOS[new Date(it.inicio).getDay()].toLowerCase()} ${ddmm(it.inicio)}${it.diaTodo ? '' : ' às ' + hhmm(it.inicio)}`;
 function textoLembrete(it, min) {
+  // véspera de serviço armado: "Amanhã: guarda 07h. Separou o 4º A?"
+  if (SERVICOS_ARMADOS.includes(it.subtipo) && min >= 600) {
+    const dispara = (it.diaTodo ? it.inicio + 8 * 3600000 : it.inicio) - min * 60000;
+    return avisoVespera(it, dispara, store.get().config.fardamentoPadrao);
+  }
   const titulo = `${SUBTIPOS[it.subtipo]?.rotulo || 'Missão'} em ${rotuloAntecedencia(min)}`;
   const pend = it.origem === 'missao' ? pendentesChecklist(it) : 0;
   const corpo = [it.titulo, dataCurta(it), it.local, pend && min >= 60 ? `Checklist: ${pend} pendente${pend > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
@@ -153,15 +158,20 @@ function cartaoEmServico(it, agora) {
   const pct = Math.min(100, Math.max(0, ((agora - it.inicio) / (fim - it.inicio)) * 100));
   const m = it.origem === 'missao' ? store.get().missoes.find((x) => x.id === it.id) : null;
   const contatos = store.get().config.contatos || [];
+  const quadro = quadroDoPosto(it.escala?.quartos, it.inicio, fim);
   return `<div class="em-servico" role="region" aria-label="Em serviço">
     <span class="lbl">Em serviço · ${esc(SUBTIPOS[it.subtipo]?.rotulo || '')}</span>
     <h2>${esc(it.titulo)}</h2>
     <div class="cd"><b class="num" data-cd-fim="${fim}">${contagem(fim - agora)}</b><small>para a rendição · ${ddmm(fim)} às ${hhmm(fim)}</small></div>
     <div class="barra-p" aria-hidden="true"><i style="width:${pct.toFixed(1)}%"></i></div>
     ${it.local || it.detalhe ? `<small>${esc([it.local, it.detalhe].filter(Boolean).join(' · '))}</small>` : ''}
-    ${m?.checklist?.length ? `<div class="checklist">${m.checklist.map((c, i) => linhaChecklist(m, i, c)).join('')}</div>` : ''}
-    ${contatos.length ? `<div class="contatos">${contatos.map((c) => `<a href="tel:${esc(c.tel.replace(/[^\d+]/g, ''))}">📞 ${esc(c.nome)}</a>`).join('')}</div>` : ''}
+    ${quadro.length ? `<div class="quadro"><span class="lbl">Seus horários no posto</span>${quadro.map((q) => {
+      const st = agora >= q.fim ? 'feito' : agora >= q.ini ? 'agora' : '';
+      return `<span class="q ${st}"><b>${hhmm(q.ini)}–${hhmm(q.fim)}</b>${st === 'agora' ? ' · no posto agora' : st === 'feito' ? ' · cumprido' : q === quadro.find((x) => agora < x.ini) ? ` · próximo em ${contagem(q.ini - agora)}` : ''}</span>`;
+    }).join('')}</div>` : (it.origem === 'missao' ? '<small>Dica: em Detalhes, preencha "Seus horários no posto" (ex.: 19h-21h, 01h-03h) para ver o quadro aqui.</small>' : '')}
+    ${contatos.length ? `<div class="contatos">${contatos.map((c) => `<a href="tel:${esc(c.tel.replace(/[^\d+]/g, ''))}">📞 ${esc(c.nome)}</a>`).join('')}</div>` : '<small>Cadastre contatos úteis (Cmt. da Guarda, Oficial de Dia…) em Ajustes para ligar daqui.</small>'}
     <div class="linha"><button class="btn" type="button" data-abrir="${esc(it.chave)}">Detalhes</button><button class="btn ouro dir" type="button" data-check="${esc(it.chave)}">Encerrar serviço</button></div>
+    ${m?.checklist?.length ? `<details class="ck-serv"${(ui.ckServAberto ?? (pendentesChecklist(m) > 0 && agora < it.inicio + 3600000)) ? ' open' : ''}><summary>Checklist · ${m.checklist.length - pendentesChecklist(m)}/${m.checklist.length} conferidos</summary><div class="checklist">${m.checklist.map((c, i) => linhaChecklist(m, i, c)).join('')}</div></details>` : ''}
     <small>Durante o serviço, só os lembretes críticos tocam; os demais chegam em silêncio.</small>
   </div>`;
 }
@@ -325,6 +335,11 @@ function renderHoras(agora) {
   // conta cada serviço pelo dia em que começou
   const itens = itensNoIntervalo(de.getTime() - 3 * DIA, ate.getTime(), { incluirPulados: true }).filter((i) => i.inicio >= de.getTime() && i.inicio < ate.getTime());
   const rel = relatorioHoras(itens, agora);
+  let anterior = null;
+  if (r.modo === 'mes') {
+    const de2 = new Date(ano, mes - 1, 1), ate2 = new Date(ano, mes, 1);
+    anterior = relatorioHoras(itensNoIntervalo(de2.getTime() - 3 * DIA, ate2.getTime(), { incluirPulados: true }).filter((i) => i.inicio >= de2.getTime() && i.inicio < ate2.getTime()), agora);
+  }
   const titulo = r.modo === 'mes' ? `${MESES[mes]} ${ano}` : `Ano de ${ano}`;
   const h = (x) => (Math.round(x * 10) / 10).toLocaleString('pt-BR');
   const futuros = itens.filter((i) => SUBTIPOS_ESCALA.includes(i.subtipo) && i.status === 'pendente' && fimEfetivo(i) > agora).length;
@@ -344,6 +359,13 @@ function renderHoras(agora) {
       ${rel.sobreaviso.qtd ? `<tr><td>Sobreaviso <small class="cinza">(à parte)</small></td><td class="n">${rel.sobreaviso.qtd}</td><td class="n">${h(rel.sobreaviso.horas)}</td></tr>` : ''}
       <tr class="total"><td>Total de serviço</td><td class="n">${rel.total.qtd}</td><td class="n">${h(rel.total.horas)}</td></tr></tbody></table>`
       : `<div class="vazio">Nenhum serviço cumprido em ${esc(titulo.toLowerCase())}.</div>`}
+    ${rel.equilibrio ? `<div class="secao"><h2 class="lbl">Equilíbrio da escala</h2>
+      <div class="cartoes-n">
+        <div><b class="num">${rel.equilibrio.guardas}</b><span>guardas</span></div>
+        <div><b class="num">${rel.equilibrio.estagios}</b><span>estágios CPU</span></div>
+        <div><b class="num">${h(rel.equilibrio.mediaFolga)}</b><span>horas de folga em média</span></div>
+      </div>
+      <p class="dica">Menor folga entre dois serviços: <b>${h(rel.equilibrio.menorFolga)} h</b>${rel.equilibrio.seguidos ? ` · <span style="color:var(--danger)">${rel.equilibrio.seguidos} vez${rel.equilibrio.seguidos > 1 ? 'es' : ''} com menos de 24 h de folga</span>` : ' · nenhuma folga menor que 24 h'}.${anterior ? ` Mês anterior: ${anterior.total.qtd} serviços (${h(anterior.total.horas)} h).` : ''}</p></div>` : ''}
     <p class="dica">Conta os serviços já terminados (ou marcados como cumpridos), exceto os trocados/dispensados. ${rel.rotina.qtd ? `Missões de rotina: <b>${rel.rotina.qtd}</b>. ` : ''}${futuros ? `Ainda previstos no período: <b>${futuros}</b>.` : ''}</p>
     ${rel.total.qtd || rel.sobreaviso.qtd ? '<button class="btn pri" type="button" data-acao="compartilhar-rel">Compartilhar relatório</button>' : ''}
   </div>`;
@@ -353,6 +375,7 @@ function renderNotas() {
   const { missoes, config } = store.get();
   const minima = +(config.mediaMinima ?? 7);
   const discs = mediasAcademicas(missoes, minima);
+  const geral = mediaGeral(discs);
   const fmt = (x) => (x == null ? '–' : (Math.round(x * 100) / 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 2 }));
   const sit = {
     'garantida': ['var(--ok)', 'Média mínima já garantida'],
@@ -367,14 +390,41 @@ function renderNotas() {
     ${chipsMissoes(ui.mis)}
     <div class="linha"><label class="lbl" for="nt-min">Média mínima</label><div class="campo" style="width:90px"><input id="nt-min" type="number" min="0" max="10" step="0.5" inputmode="decimal" value="${esc(minima)}"></div>
       <button class="btn pri dir" type="button" data-acao="nova-prova">+ Prova ou trabalho</button></div>
+    ${discs.length ? `<div class="cartoes-n">
+      <div><b class="num" style="color:${geral.media == null ? 'var(--muted)' : geral.media >= minima ? 'var(--ok)' : 'var(--danger)'}">${fmt(geral.media)}</b><span>média geral</span></div>
+      <div><b class="num">${geral.finalizadas}</b><span>matérias finalizadas</span></div>
+      <div><b class="num">${geral.total - geral.finalizadas}</b><span>em andamento</span></div></div>
+      <p class="dica">Média geral = soma das médias das matérias finalizadas ÷ quantidade de matérias finalizadas. A média de cada matéria usa o peso de cada avaliação.</p>` : ''}
     ${discs.length ? discs.map((d) => {
       const [cor, txt] = sit[d.situacao];
-      const msg = d.situacao === 'em-aberto' ? `Precisa de <b>${fmt(d.precisa)}</b> de média nas avaliações restantes (peso ${fmt(d.pesosFaltam)})` : txt;
+      const so1 = d.proxima && d.pesosFaltam === d.proxima.peso;
+      const msg = d.situacao === 'em-aberto'
+        ? `${so1 ? 'Na próxima' : 'Na próxima (e nas demais)'} — <b>${esc(d.proxima.titulo)}</b>, ${ddmm(d.proxima.inicio)}, peso ${fmt(d.proxima.peso)} — precisa tirar pelo menos <b>${fmt(d.precisa)}</b> para fechar com ${fmt(minima)}.`
+        : d.situacao === 'garantida' && d.proxima ? `${txt}: mesmo tirando 0 em ${esc(d.proxima.titulo)} a média fica acima de ${fmt(minima)}.`
+        : d.situacao === 'impossivel' && d.proxima ? `${txt} (precisaria de ${fmt(d.precisa)} em ${esc(d.proxima.titulo)}).` : txt;
       return `<div class="disc" style="--cor:${cor}">
         <div class="disc-cab"><b>${esc(d.disciplina)}</b><span class="disc-media" style="color:${cor}">${fmt(d.media)}</span></div>
         ${d.avaliacoes.map((a) => `<button type="button" class="disc-av" data-abrir="${esc(a.id)}"><b>${esc(a.titulo)}</b><span>${ddmm(a.inicio)} · peso ${fmt(a.peso)}</span><span class="num">${a.nota == null ? '—' : fmt(a.nota)}</span></button>`).join('')}
         <p style="color:${cor}">${msg}</p></div>`;
     }).join('') : '<div class="vazio">Lance provas e trabalhos com a disciplina, o peso e a nota para ver as médias e quanto falta para passar.</div>'}
+    ${blocoDisciplina(config)}
+  </div>`;
+}
+
+/** Histórico disciplinar (FO+, AAD e MCE) importado da Planilha de Anotados e da NAMCE. */
+function blocoDisciplina(config) {
+  const regs = [...(config.disciplina || [])].sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+  const pos = regs.filter((r) => r.tipo === 'FO+').length, neg = regs.length - pos;
+  const mces = regs.reduce((n, r) => n + (r.mce && !/anulad|transferid|justificad|duplicad/i.test(r.mce) ? r.mce.split('+').length : 0), 0);
+  return `<div class="secao"><h2 class="lbl">Disciplina</h2>
+    ${regs.length ? `<div class="cartoes-n">
+      <div><b class="num" style="color:var(--ok)">${pos}</b><span>FO+</span></div>
+      <div><b class="num" style="color:${neg ? 'var(--danger)' : 'var(--muted)'}">${neg}</b><span>AAD</span></div>
+      <div><b class="num">${mces}</b><span>MCE aplicadas</span></div></div>
+      <div class="imp-lista">${regs.map((r) => `<div class="imp-item anot ${r.tipo === 'FO+' ? 'pos' : 'neg'}"><span><b>${esc(r.tipo)} · ${esc((r.data || '').split('-').reverse().join('/'))}</b> ${esc(r.texto)}
+        <small>${esc(r.doc)}${r.anotador ? ' · ' + esc(r.anotador) : ''}${r.mce ? ' · MCE: ' + esc(r.mce) : ''}</small></span>
+        <button class="btn link" type="button" data-disc-rm="${esc(r.id)}" aria-label="Remover">${svgLixo}</button></div>`).join('')}</div>`
+      : '<div class="vazio">Importe a Planilha de Anotados ou a NAMCE (botão dourado › PDF) para guardar aqui seus FO+, AAD e MCE.</div>'}
   </div>`;
 }
 
@@ -466,6 +516,8 @@ function renderAjustes() {
       <p>Usados para achar os seus serviços ao importar uma escala em PDF.</p>
       <div class="campo"><label class="lbl" for="aj-ncompleto">Nome completo (Serviço Interno)</label><input id="aj-ncompleto" value="${esc(config.nomeCompleto || '')}" autocomplete="name"></div>
       <div class="campo"><label class="lbl" for="aj-nguerra">Nome de guerra (Escala da Rotina)</label><input id="aj-nguerra" value="${esc(config.nomeGuerra || '')}"></div>
+      <div class="campo"><label class="lbl" for="aj-fard">Fardamento padrão da guarda e do estágio</label><input id="aj-fard" placeholder="Ex.: 4º A" value="${esc(config.fardamentoPadrao || '')}"></div>
+      <p>Usado no aviso da véspera ("Amanhã: guarda 07h. Separou o 4º A?") quando o serviço não tem fardamento próprio.</p>
       <div class="linha"><button class="btn pri" type="button" data-acao="salvar-nomes">Salvar</button><button class="btn" type="button" data-acao="importar-pdf">Importar escala em PDF</button></div></div>
     <div class="ajuste"><h3>Contatos do serviço</h3>
       <p>Aparecem no modo "Em serviço" para ligar com um toque (Cmt. da Guarda, Oficial de Dia, Dia-à-EsFO…).</p>
@@ -555,6 +607,7 @@ async function carregarTurma() {
   Object.assign(T, { perfil, avisos, escalas });
   T.trocas = await tentar(nuvem.minhasTrocas, T.trocas);
   T.carregado = true; T.carregando = false;
+  aplicarTrocas();
   atualizarBadge();
   if (ui.vista === 'turma' || ui.vista === 'painel') renderizar();
 }
@@ -573,15 +626,16 @@ function cartaoTroca(t) {
   else if (t.enviada && t.status === 'pendente') botoes = [['cancelada', 'Cancelar pedido']];
   else if (t.status === 'aceita') {
     botoes = [['fiscal', 'Avisar o fiscal', 'ouro']];
-    const jaTenho = store.get().missoes.some((m) => m.id === `troca-${t.id}`);
-    if (!t.enviada && !jaTenho) botoes.push(['assumir', 'Pôr na minha agenda', 'pri']);
-    if (t.enviada) botoes.push(['liberar', 'Tirar da minha agenda']);
-    if (t.enviada) botoes.push(['cancelada', 'Desfazer troca']);
+    if (t.enviada && sv?.inicio > Date.now()) botoes.push(['cancelada', 'Desfazer troca']);
   } else botoes = [['apagar', 'Apagar']];
+  const conflito = !t.enviada && t.status === 'pendente' && sv ? conflitos(sv)[0] : null;
   return `<div class="cartao-n">
     <div class="linha"><span class="st ${t.status}">${ROT_STATUS[t.status] || t.status}</span><span class="meta">${t.enviada ? 'Você pediu a' : 'Pedido de'} Cad. ${esc(outro)}</span></div>
     <h3>${t.ilegivel ? 'Dados indisponíveis neste aparelho' : esc(descServico(sv))}</h3>
     ${t.motivo ? `<p>${esc(t.motivo)}</p>` : ''}
+    ${t.fiscal ? `<span class="meta">Fiscalizador: ${esc(t.fiscal)}</span>` : ''}
+    ${t.status === 'aceita' ? `<span class="meta ok-txt">${t.enviada ? 'Saiu da sua agenda' : 'Está na sua agenda'} · a escala dos dois foi atualizada</span>` : ''}
+    ${conflito ? `<span class="meta erro">Você já tem ${esc(SUBTIPOS[conflito.subtipo]?.rotulo || 'serviço')} nesse horário: não pode aceitar.</span>` : ''}
     <span class="meta">${ddmm(t.criadoEm)} às ${hhmm(t.criadoEm)}</span>
     <div class="linha">${botoes.map(([a, r, c]) => `<button class="btn ${c || ''}" type="button" data-troca="${a}" data-id="${esc(t.id)}">${r}</button>`).join('')}</div></div>`;
 }
@@ -633,7 +687,7 @@ function renderTurma() {
     <div class="secao"><h2 class="lbl">Escalas da turma</h2>
       ${escalante ? '<button class="btn ouro" type="button" data-acao="publicar-escala">Publicar escala (PDF) para a turma</button>' : ''}
       ${T.escalas.length ? T.escalas.map((e) => `<div class="cartao-n"><h3>${esc(e.titulo)}</h3>
-        <span class="meta">${e.tipo === 'interna' ? 'Serviço Interno' : 'Missões de Rotina'} · ${e.linhas?.length || 0} linhas · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
+        <span class="meta">${{ interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação' }[e.tipo] || 'Escala'} · ${e.linhas?.length || 0} linhas · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
         <div class="linha"><button class="btn pri" type="button" data-escala="${esc(e.id)}">Ver meus serviços</button>${admin || e.publicadoPor === ui.conta.email ? `<button class="btn link dir" type="button" data-escala-rm="${esc(e.id)}">Apagar</button>` : ''}</div></div>`).join('')
         : `<div class="vazio">Nenhuma escala publicada.${escalante ? '' : ' Enquanto isso, importe o PDF pelo botão dourado.'}</div>`}
     </div>
@@ -841,7 +895,7 @@ function abrirMissao(id, { rapido, dia, modelo } = {}) {
   const fimBase = base.fim || base.inicio + 24 * 3600000;
   $('#m-fimdata').value = paraData(fimBase); $('#m-fimhora').value = paraHora(fimBase);
   $('#m-local').value = base.local || ''; $('#m-obs').value = base.obs || '';
-  $('#m-posto').value = base.escala?.posto || ''; $('#m-funcao').value = base.escala?.funcao || ''; $('#m-fard').value = base.escala?.fardamento || '';
+  $('#m-posto').value = base.escala?.posto || ''; $('#m-funcao').value = base.escala?.funcao || ''; $('#m-fard').value = base.escala?.fardamento || (base.escala && SERVICOS_ARMADOS.includes(base.subtipo) && !m ? store.get().config.fardamentoPadrao || '' : ''); $('#m-quartos').value = base.escala?.quartos || '';
   $('#t-com').value = ''; $('#t-motivo').value = ''; $('#t-status').value = 'solicitada';
   desenharTrocas(m);
   desenharFormMissao();
@@ -901,7 +955,7 @@ $('#form-missao').addEventListener('submit', (e) => {
   const acad = SUBTIPOS_AVALIACAO.includes(fm.subtipo);
   const nota = $('#m-nota').value.trim(), peso = $('#m-peso').value.trim();
   if (acad && nota !== '' && !(+nota >= 0 && +nota <= 10)) return erro('A nota precisa estar entre 0 e 10.');
-  const escala = SUBTIPOS_ESCALA.includes(fm.subtipo) ? { posto: $('#m-posto').value.trim(), funcao: $('#m-funcao').value.trim(), fardamento: $('#m-fard').value.trim(),
+  const escala = SUBTIPOS_ESCALA.includes(fm.subtipo) ? { posto: $('#m-posto').value.trim(), funcao: $('#m-funcao').value.trim(), fardamento: $('#m-fard').value.trim(), quartos: $('#m-quartos').value.trim(),
     ...(fm.subtipo === 'estagio_cpu' ? { unidade: fm.unidade, crpm: crpmDa(fm.unidade), oficial: $('#m-oficial').value.trim() } : {}) } : null;
   store.salvarMissao({ id: fm.editando || novoId(), titulo, categoria: fm.categoria, subtipo: fm.subtipo, prioridade: fm.prioridade,
     inicio, fim, diaTodo, local: $('#m-local').value.trim(), obs: $('#m-obs').value.trim(), lembretes: fm.lembretes, escala,
@@ -1043,10 +1097,15 @@ function abrirImportar(modo = 'importar') {
   desenharImportar();
   abrirFolha('#dlg-importar');
 }
-function abrirEscalaPublicada(id) {
+let EXT = null; // escalasExtras.js, carregado sob demanda
+async function abrirEscalaPublicada(id) {
   const e = ui.turma.escalas.find((x) => x.id === id);
   if (!e) return;
   ui.imp = { etapa: 'resultado', modo: 'importar', tipo: e.tipo, linhas: e.linhas || [], nomeArquivo: e.titulo, origem: 'turma' };
+  if (!['interna', 'rotina'].includes(e.tipo)) {
+    EXT ||= await import('./escalasExtras.js');
+    ui.imp.doc = { tipo: e.tipo, titulo: e.titulo, linhas: e.linhas || [] };
+  }
   desenharImportar();
   abrirFolha('#dlg-importar');
 }
@@ -1069,7 +1128,7 @@ function desenharImportar() {
       <div class="campo"><label class="lbl" for="im-ncompleto">Seu nome completo</label><input id="im-ncompleto" value="${esc(cfg.nomeCompleto || '')}" placeholder="Como está no Serviço Interno"></div>
       <div class="campo"><label class="lbl" for="im-nguerra">Nome de guerra</label><input id="im-nguerra" value="${esc(cfg.nomeGuerra || '')}" placeholder="Como está na Rotina"></div></div>`;
   if (imp.etapa === 'inicio') {
-    corpo.innerHTML = `<p class="dica">Escolha o PDF da <b>Previsão de Escala de Serviço Interno</b> ou da <b>Escala da Rotina</b>. O arquivo é lido aqui no aparelho${imp.modo === 'publicar' ? ' e a escala inteira fica disponível para a turma' : ' e nada é enviado'}.</p>
+    corpo.innerHTML = `<p class="dica">Escolha o PDF: <b>Serviço Interno</b>, <b>Rotina</b>, <b>Desfile</b>, <b>Representação</b>, <b>Comando</b>, <b>Suplência</b>${imp.modo === 'publicar' ? '' : ', <b>Planilha de Anotados</b> ou <b>NAMCE</b>'}. O arquivo é lido aqui no aparelho${imp.modo === 'publicar' ? ' e a escala inteira fica disponível para a turma' : ' e nada é enviado'}.</p>
       ${imp.modo === 'importar' ? nomes : ''}
       <label class="btn pri" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher PDF</label>`;
     return;
@@ -1079,6 +1138,7 @@ function desenharImportar() {
     corpo.innerHTML = `<p class="erro">${esc(imp.erro)}</p><label class="btn" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher outro PDF</label>`;
     return;
   }
+  if (imp.doc) return desenharDocumento(imp, cfg, corpo, nomes);
   // resultado
   const titulo = tituloEscala(imp);
   const podePublicar = imp.origem === 'pdf' && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante');
@@ -1091,7 +1151,7 @@ function desenharImportar() {
     return;
   }
   const meus = meusServicosDaEscala(imp, cfg);
-  const missoes = meus ? linhasParaMissoes(meus) : [];
+  const missoes = meus ? linhasParaMissoes(meus, { fardamento: cfg.fardamentoPadrao || '' }) : [];
   const existentes = new Set(store.get().missoes.map((m) => m.id));
   imp.missoes = missoes;
   const nomeUsado = imp.tipo === 'interna' ? 'nome completo' : 'nome de guerra';
@@ -1105,14 +1165,70 @@ function desenharImportar() {
         <button class="btn pri" type="button" data-imp="adicionar">Adicionar à agenda</button>`}
     ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}`;
 }
+/** Desfile, Representação, Comando, Suplência, Planilha de Anotados e NAMCE. */
+function desenharDocumento(imp, cfg, corpo, nomes) {
+  const doc = imp.doc, E = EXT;
+  const podePublicar = imp.origem === 'pdf' && E.PUBLICAVEIS.includes(doc.tipo) && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante');
+  const cab = `<div class="previa"><b>${esc(doc.titulo)}</b><span>${esc(E.NOMES_DOC[doc.tipo] || 'Documento')}${doc.semTexto ? '' : ` · ${doc.linhas.length} linha${doc.linhas.length === 1 ? '' : 's'} lida${doc.linhas.length === 1 ? '' : 's'}`}${imp.origem === 'turma' ? ' · publicada na turma' : ''}</span></div>`;
+  if (imp.modo === 'publicar') {
+    corpo.innerHTML = E.PUBLICAVEIS.includes(doc.tipo) ? `${cab}
+      <div class="campo"><label class="lbl" for="im-titulo">Título para a turma</label><input id="im-titulo" value="${esc(doc.titulo)}"></div>
+      <p class="dica">Os cadetes liberados verão a escala na aba Turma e importam só o que é deles.</p>
+      <div class="linha"><button class="btn pri" type="button" data-imp="publicar">Publicar</button><label class="btn" for="arquivo-pdf" style="cursor:pointer">Outro PDF</label></div>`
+      : `${cab}<p class="erro">Este documento não é publicado para a turma${doc.tipo === 'anotados' || doc.tipo === 'namce' ? ' (é disciplinar: cada cadete importa o próprio)' : ' (vem como imagem: cada cadete marca a própria função)'}.</p><label class="btn" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher outro PDF</label>`;
+    return;
+  }
+  const disciplinar = doc.tipo === 'anotados' || doc.tipo === 'namce';
+  const comando = doc.tipo === 'comando' || doc.tipo === 'suplencia';
+  if (doc.tipo === 'namce' && !imp.sexta) imp.sexta = E.sextaDasMce(new Date());
+  const minhas = comando ? [] : E.minhasLinhas(doc, cfg);
+  const funcao = imp.funcao === 'outra' ? (imp.funcaoOutra || '').trim() : imp.funcao;
+  const missoes = E.missoesDoDocumento(doc, minhas, { funcao, sexta: imp.sexta });
+  imp.missoes = missoes;
+  imp.registros = disciplinar ? E.registrosDisciplina(doc, minhas) : [];
+  const existentes = new Set(store.get().missoes.map((m) => m.id));
+  const lista = missoes.length ? `<span class="lbl">${missoes.length} compromisso${missoes.length > 1 ? 's' : ''} para a agenda</span>
+    <div class="imp-lista">${missoes.map((m, i) => `<label class="imp-item${existentes.has(m.id) ? ' existe' : ''}"><input type="checkbox" data-imp-sel="${i}" checked>
+      <span><b>${esc(m.titulo)}</b><small>${esc(rotuloDia(m.inicio))} · ${esc(horario(m))}${m.local ? ' · ' + esc(m.local) : ''}${existentes.has(m.id) ? ' · já está na agenda (será atualizado)' : ''}</small></span></label>`).join('')}</div>` : '';
+  let meio = '';
+  if (comando) {
+    const opc = E.FUNCOES_COMANDO.map((f) => `<option${imp.funcao === f ? ' selected' : ''}>${esc(f)}</option>`).join('');
+    meio = `<p class="dica">Nesta escala os nomes estão em imagem no PDF, então o app não consegue lê-los. Confira o organograma e escolha a sua função${doc.tipo === 'suplencia' ? ' de suplente' : ''}.</p>
+      <div class="campo"><label class="lbl" for="im-funcao">Sua função na semana</label><select id="im-funcao"><option value="">Não estou nesta escala</option>${opc}<option value="outra"${imp.funcao === 'outra' ? ' selected' : ''}>Outra…</option></select></div>
+      ${imp.funcao === 'outra' ? `<div class="campo"><label class="lbl" for="im-funcao-outra">Qual função?</label><input id="im-funcao-outra" value="${esc(imp.funcaoOutra || '')}" placeholder="Ex.: Cmd. 1º PM Echo"></div>` : ''}`;
+  } else {
+    const nomeUsado = disciplinar ? 'nome de guerra' : 'nome completo';
+    const falta = disciplinar ? !cfg.nomeGuerra : !(cfg.nomeCompleto || cfg.nomeGuerra);
+    const minhasHtml = disciplinar && minhas.length ? `<span class="lbl">Seu nome aparece ${minhas.length} vez${minhas.length > 1 ? 'es' : ''}</span>
+      <div class="imp-lista">${minhas.map((l) => { const k = E.codigosMce(l.mce); return `<div class="imp-item anot ${l.tipoAnot === 'FO+' ? 'pos' : 'neg'}"><span><b>${l.tipoAnot} · ${esc(l.data.split('-').reverse().join('/'))}</b> ${esc(l.texto)}<small>${esc(l.anotador || '')}${doc.tipo === 'namce' && l.tipoAnot === 'AAD' ? ' · MCE: ' + esc(k.situacao || k.codigos.join(' + ') || '—') : ''}</small></span></div>`; }).join('')}</div>` : '';
+    meio = `${nomes}
+      ${doc.tipo === 'namce' ? `<div class="campo"><label class="lbl" for="im-sexta">Sexta-feira do cumprimento</label><input id="im-sexta" type="date" value="${esc(imp.sexta)}"></div>` : ''}
+      ${falta ? `<p class="erro">Preencha o seu ${nomeUsado} para achar o que é seu.</p>`
+        : !minhas.length ? `<p class="ok-msg">${disciplinar ? 'Seu nome de guerra não aparece neste documento.' : `Nenhuma linha com esse ${nomeUsado}. Confira se está escrito como no PDF.`}</p>` : minhasHtml}`;
+  }
+  const botao = missoes.length ? `<button class="btn pri" type="button" data-imp="adicionar">Adicionar à agenda${imp.registros.length ? ' e ao histórico' : ''}</button>`
+    : imp.registros.length ? '<button class="btn pri" type="button" data-imp="adicionar">Guardar no histórico disciplinar</button>' : '';
+  corpo.innerHTML = `${cab}${meio}${lista}${botao}
+    ${disciplinar && minhas.length ? '<p class="dica">As anotações ficam só na sua agenda (criptografada). Veja em Missões › Notas › Disciplina.</p>' : ''}
+    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}`;
+}
 async function lerPdfEscolhido(arquivo) {
   ui.imp = { ...(ui.imp || { modo: 'importar' }), etapa: 'lendo', nomeArquivo: arquivo.name };
   desenharImportar();
   try {
     const pdf = await import('./escalaPdf.js');
     const itens = await pdf.extrairItens(arquivo);
+    EXT ||= await import('./escalasExtras.js');
+    const extra = EXT.detectarTipoExtra(itens);
+    if (extra) {
+      const doc = EXT.lerDocumento(extra, itens);
+      if (!doc.semTexto && !doc.linhas.length) throw new Error(`Não encontrei a tabela da ${EXT.NOMES_DOC[extra]} neste PDF.`);
+      Object.assign(ui.imp, { etapa: 'resultado', tipo: extra, doc, linhas: doc.linhas, origem: 'pdf', funcao: '', funcaoOutra: '', sexta: '' });
+      desenharImportar();
+      return;
+    }
     const tipo = pdf.detectarTipo(itens);
-    if (!tipo) throw new Error('Não reconheci este PDF como Escala de Serviço Interno nem Escala da Rotina.');
+    if (!tipo) throw new Error('Não reconheci este PDF. O app lê: Serviço Interno, Rotina, Desfile, Representação, Comando, Suplência, Planilha de Anotados e NAMCE.');
     const linhas = tipo === 'interna' ? pdf.lerEscalaInterna(itens) : pdf.lerEscalaRotina(itens, new Date());
     if (!linhas.length) throw new Error('Não encontrei a tabela da escala neste PDF.');
     Object.assign(ui.imp, { etapa: 'resultado', tipo, linhas, origem: 'pdf' });
@@ -1122,6 +1238,14 @@ async function lerPdfEscolhido(arquivo) {
   }
   desenharImportar();
 }
+$('#importar-corpo').addEventListener('change', (e) => {
+  const imp = ui.imp; if (!imp?.doc) return;
+  if (e.target.id === 'im-funcao') imp.funcao = e.target.value;
+  else if (e.target.id === 'im-funcao-outra') imp.funcaoOutra = e.target.value;
+  else if (e.target.id === 'im-sexta') imp.sexta = e.target.value;
+  else return;
+  desenharImportar();
+});
 $('#importar-corpo').addEventListener('input', (e) => {
   if (e.target.id !== 'im-ncompleto' && e.target.id !== 'im-nguerra') return;
   const nomes = { nomeCompleto: $('#im-ncompleto').value.trim(), nomeGuerra: $('#im-nguerra').value.trim() };
@@ -1136,7 +1260,14 @@ $('#importar-corpo').addEventListener('click', async (e) => {
   const imp = ui.imp;
   if (b.dataset.imp === 'adicionar') {
     const sel = $$('[data-imp-sel]').filter((x) => x.checked).map((x) => imp.missoes[+x.dataset.impSel]);
-    if (!sel.length) return toast('Nenhum serviço marcado');
+    const regs = imp.registros || [];
+    if (!sel.length && !regs.length) return toast('Nenhum serviço marcado');
+    if (regs.length) {
+      const atual = store.get().config.disciplina || [];
+      const ids = new Set(atual.map((r) => r.id));
+      store.setConfig({ disciplina: [...atual, ...regs.filter((r) => !ids.has(r.id))] });
+    }
+    if (!sel.length) { fecharFolha('#dlg-importar'); return toast('Guardado no histórico disciplinar'); }
     const novas = store.salvarMissoes(sel);
     fecharFolha('#dlg-importar');
     vibrar(25);
@@ -1146,7 +1277,7 @@ $('#importar-corpo').addEventListener('click', async (e) => {
   if (b.dataset.imp === 'publicar') {
     b.disabled = true;
     try {
-      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || tituloEscala(imp), linhas: imp.linhas });
+      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || (imp.doc ? imp.doc.titulo : tituloEscala(imp)), linhas: imp.linhas });
       fecharFolha('#dlg-importar'); toast('Escala publicada para a turma');
       ui.turma.carregado = false; carregarTurma();
     } catch (err) { b.disabled = false; toast(mensagemErro(err)); }
@@ -1160,14 +1291,21 @@ $('#arquivo-pdf').addEventListener('change', (e) => {
 });
 $('#rapido-pdf').addEventListener('click', () => { fecharFolha('#dlg-rapido'); abrirImportar('importar'); });
 
-/* ---- Pedido de troca pelo app ---- */
+/* ---- Trocas de serviço pelo app ----
+ * Regras da EsFO conferidas pelo app (e pelo Firebase, nas regras de segurança):
+ *  - só com colega da MESMA turma;
+ *  - o serviço ainda não começou e não há outro pedido aberto para ele;
+ *  - o fiscalizador precisa ser informado (nome obrigatório e mensagem pronta);
+ *  - quem recebe não pode assumir se já tiver serviço no mesmo horário.
+ * Aceita a troca, a agenda dos dois se atualiza sozinha.
+ */
 let trocaAlvo = null;
 async function abrirPedidoTroca(chave) {
   const it = acharItem(chave); if (!it) return;
   if (!ui.turma.carregado) await carregarTurma();
   const perfil = ui.turma.perfil;
   if (!perfil) { fecharFolha('#dlg-missao'); ui.vista = 'turma'; renderizar(); return toast('Entre na turma primeiro para pedir trocas.'); }
-  trocaAlvo = { it, perfil, colegas: null, escolhido: '' };
+  trocaAlvo = { it, perfil, colegas: null, escolhido: '', fiscal: store.get().config.ultimoFiscal || '' };
   fecharFolha('#dlg-missao');
   desenharTroca();
   abrirFolha('#dlg-troca');
@@ -1175,29 +1313,54 @@ async function abrirPedidoTroca(chave) {
   catch (e) { trocaAlvo.erro = mensagemErro(e); trocaAlvo.colegas = []; }
   desenharTroca();
 }
+function regrasDoPedido(t) {
+  const aberto = ui.turma.trocas.some((x) => x.enviada && x.servico?.chave === t.it.chave && ['pendente', 'aceita'].includes(x.status));
+  return [
+    { ok: true, txt: `Colegas da mesma turma (${t.perfil.turma})` },
+    { ok: t.it.inicio > Date.now(), txt: t.it.inicio > Date.now() ? 'Serviço ainda não começou' : 'O serviço já começou: não dá mais para trocar' },
+    { ok: !aberto, txt: aberto ? 'Já existe um pedido aberto para este serviço' : 'Nenhum outro pedido aberto para este serviço' },
+    { ok: !!(t.fiscal || '').trim(), txt: (t.fiscal || '').trim() ? `Fiscalizador: ${t.fiscal.trim()}` : 'Informe o fiscalizador' },
+  ];
+}
 function desenharTroca() {
   const t = trocaAlvo, corpo = $('#troca-corpo');
+  const regras = regrasDoPedido(t);
+  const pode = t.escolhido && regras.every((r) => r.ok);
   corpo.innerHTML = `<div class="previa"><b>${esc(t.it.titulo)}</b><span>${esc(dataCurta(t.it))}${t.it.fim ? ' → ' + ddmm(t.it.fim) + ' ' + hhmm(t.it.fim) : ''}</span>${t.it.detalhe ? `<span>${esc(t.it.detalhe)}</span>` : ''}</div>
     <span class="lbl">Colega da turma ${esc(t.perfil.turma)}</span>
     ${t.colegas == null ? '<p class="carregando">Buscando colegas…</p>'
       : t.colegas.length ? `<div class="chips">${t.colegas.map((c) => chip({ rotulo: 'Cad. ' + (c.nomeGuerra || c.nome), ativo: t.escolhido === c.email, dados: `data-colega="${esc(c.email)}"` })).join('')}</div>`
       : `<p class="erro">${esc(t.erro || 'Nenhum colega desta turma entrou no app ainda.')}</p>`}
+    <div class="campo"><label class="lbl" for="tr-fiscal">Fiscalizador a ser informado</label><input id="tr-fiscal" placeholder="Ex.: Ten. Silva" value="${esc(t.fiscal || '')}"></div>
     <div class="campo"><label class="lbl" for="tr-motivo">Motivo</label><input id="tr-motivo" placeholder="Ex.: consulta médica, viagem" value="${esc(t.motivo || '')}"></div>
-    <p class="dica">O colega recebe o pedido na aba Turma. Os dados do serviço vão criptografados entre vocês dois.</p>
-    <button class="btn pri" type="button" data-tr="enviar" ${t.escolhido ? '' : 'disabled'}>Enviar pedido</button>`;
+    <div class="caixa"><span class="lbl">Regras da troca</span><div class="regras-troca">${regras.map((r) => `<span class="${r.ok ? '' : 'nao'}">${esc(r.txt)}</span>`).join('')}</div></div>
+    <p class="dica">Quando o colega aceitar, o serviço sai da sua agenda e entra na dele automaticamente. Os dados vão criptografados entre vocês dois.</p>
+    <button class="btn pri" type="button" data-tr="enviar" ${pode ? '' : 'disabled'}>Enviar pedido</button>`;
 }
+$('#troca-corpo').addEventListener('input', (e) => {
+  if (e.target.id === 'tr-fiscal' || e.target.id === 'tr-motivo') {
+    trocaAlvo.fiscal = $('#tr-fiscal').value; trocaAlvo.motivo = $('#tr-motivo').value;
+    const regras = regrasDoPedido(trocaAlvo);
+    $('#troca-corpo .regras-troca').innerHTML = regras.map((r) => `<span class="${r.ok ? '' : 'nao'}">${esc(r.txt)}</span>`).join('');
+    $('[data-tr="enviar"]').disabled = !(trocaAlvo.escolhido && regras.every((r) => r.ok));
+  }
+});
 $('#troca-corpo').addEventListener('click', async (e) => {
   const c = e.target.closest('[data-colega]');
-  if (c) { trocaAlvo.motivo = $('#tr-motivo').value; trocaAlvo.escolhido = c.dataset.colega; return desenharTroca(); }
+  if (c) { trocaAlvo.motivo = $('#tr-motivo').value; trocaAlvo.fiscal = $('#tr-fiscal').value; trocaAlvo.escolhido = c.dataset.colega; return desenharTroca(); }
   const b = e.target.closest('[data-tr="enviar"]'); if (!b) return;
   const t = trocaAlvo, it = t.it;
+  t.fiscal = $('#tr-fiscal').value.trim(); t.motivo = $('#tr-motivo').value.trim();
+  if (!t.escolhido || !regrasDoPedido(t).every((r) => r.ok)) return desenharTroca();
   const colega = t.colegas.find((x) => x.email === t.escolhido);
   b.disabled = true;
   try {
-    const servico = { titulo: it.titulo, subtipo: it.subtipo, categoria: it.categoria, inicio: it.inicio, fim: it.fim, diaTodo: it.diaTodo, local: it.local || '', detalhe: it.detalhe || '', chave: it.chave };
-    await nuvem.pedirTroca({ colega, meuPerfil: t.perfil, servico, motivo: $('#tr-motivo').value.trim() });
-    if (it.origem === 'missao') store.registrarTroca(it.id, { comQuem: 'Cad. ' + (colega.nomeGuerra || colega.nome), motivo: $('#tr-motivo').value.trim(), status: 'solicitada' });
-    fecharFolha('#dlg-troca'); toast('Pedido de troca enviado');
+    const servico = { titulo: it.titulo, subtipo: it.subtipo, categoria: it.categoria, inicio: it.inicio, fim: it.fim, diaTodo: it.diaTodo, local: it.local || '', detalhe: it.detalhe || '', chave: it.chave,
+      escala: it.escala ? { fardamento: it.escala.fardamento || '', posto: it.escala.posto || '', funcao: it.escala.funcao || '' } : null };
+    await nuvem.pedirTroca({ colega, meuPerfil: t.perfil, servico, motivo: t.motivo, fiscal: t.fiscal });
+    store.setConfig({ ultimoFiscal: t.fiscal });
+    if (it.origem === 'missao') store.registrarTroca(it.id, { comQuem: 'Cad. ' + (colega.nomeGuerra || colega.nome), motivo: t.motivo, status: 'solicitada' });
+    fecharFolha('#dlg-troca'); toast('Pedido enviado. Quando o colega aceitar, sua agenda se atualiza.');
     ui.turma.carregado = false; carregarTurma();
   } catch (err) { b.disabled = false; toast(err.code === 'sem-chave' ? 'Ative a sincronização em Ajustes primeiro.' : mensagemErro(err)); }
 });
@@ -1206,47 +1369,69 @@ $('#troca-corpo').addEventListener('click', async (e) => {
 function textoFiscal(t) {
   const sv = t.servico || {};
   const quem = (n) => 'Cad. ' + n;
-  return `Sr. Fiscal, informo a troca de serviço:\n${SUBTIPOS[sv.subtipo]?.rotulo || sv.titulo}${sv.detalhe ? ' (' + sv.detalhe + ')' : ''} de ${dataCurta(sv)}${sv.fim ? ' a ' + ddmm(sv.fim) + ' ' + hhmm(sv.fim) : ''}.\nSai: ${quem(t.deNome)}\nEntra: ${quem(t.paraNome)}${t.motivo ? '\nMotivo: ' + t.motivo : ''}\nAmbos de acordo.`;
+  return `${t.fiscal ? t.fiscal + ', ' : 'Sr. Fiscal, '}informo a troca de serviço:\n${SUBTIPOS[sv.subtipo]?.rotulo || sv.titulo}${sv.detalhe ? ' (' + sv.detalhe + ')' : ''} de ${dataCurta(sv)}${sv.fim ? ' a ' + ddmm(sv.fim) + ' ' + hhmm(sv.fim) : ''}.\nSai: ${quem(t.deNome)}\nEntra: ${quem(t.paraNome)}${t.motivo ? '\nMotivo: ' + t.motivo : ''}\nAmbos de acordo (mesma turma, ${t.turma}).`;
 }
 async function compartilharTexto(texto, titulo) {
   try { if (navigator.share) { await navigator.share({ title: titulo, text: texto }); return; } } catch (e) { if (e.name === 'AbortError') return; }
   try { await navigator.clipboard.writeText(texto); toast('Texto copiado. Cole no WhatsApp ou e-mail.'); }
   catch (e) { prompt('Copie o texto:', texto); }
 }
-async function acaoTroca(acao, id) {
-  const t = ui.turma.trocas.find((x) => x.id === id); if (!t) return;
-  try {
-    if (['aceita', 'recusada', 'cancelada'].includes(acao)) {
-      await nuvem.responderTroca(id, acao);
-      if (acao === 'aceita') toast('Troca aceita. Toque em "Pôr na minha agenda" e avise o fiscal.');
-      else toast(acao === 'recusada' ? 'Troca recusada' : 'Troca cancelada');
-      if (acao === 'cancelada' && t.enviada) devolverServico(t);
-    }
-    if (acao === 'apagar') { await nuvem.apagarTroca(id); toast('Apagada'); }
-    if (acao === 'fiscal') return compartilharTexto(textoFiscal(t), 'Troca de serviço');
-    if (acao === 'assumir') {
-      const sv = t.servico;
-      store.salvarMissao({ id: `troca-${t.id}`, titulo: sv.titulo, categoria: sv.categoria || SUBTIPOS[sv.subtipo]?.categoria || 'operacional', subtipo: sv.subtipo, prioridade: 'critico',
-        inicio: sv.inicio, fim: sv.fim, diaTodo: !!sv.diaTodo, local: sv.local || '', detalhe: sv.detalhe || '', obs: `Troca com Cad. ${t.deNome}${t.motivo ? ' · ' + t.motivo : ''}`,
-        lembretes: lembretesPadrao(sv.subtipo, 'critico'), checklist: checklistPadrao(sv.subtipo), escala: null,
-        trocas: [{ em: Date.now(), comQuem: 'Cad. ' + t.deNome, status: 'aprovada', motivo: 'Assumido por troca' }] });
-      toast('Serviço na sua agenda');
-      return renderizar();
-    }
-    if (acao === 'liberar') {
-      const sv = t.servico;
-      if (sv?.chave?.startsWith('ciclo:')) { const [, cid, ini] = sv.chave.split(':'); store.excecaoCiclo(cid, +ini, { tipo: 'pulado', motivo: `Troca com Cad. ${t.paraNome}` }); }
-      else if (sv?.chave) { store.salvarMissao({ id: sv.chave, status: 'pulado' }); store.registrarTroca(sv.chave, { comQuem: 'Cad. ' + t.paraNome, status: 'aprovada', motivo: t.motivo || '' }); }
-      toast('Serviço tirado da sua agenda (fica como trocado)');
-      return renderizar();
-    }
-    ui.turma.carregado = false; carregarTurma();
-  } catch (e) { toast(mensagemErro(e)); }
+/** Serviços da escala que batem com o horário do serviço oferecido (para quem vai assumir). */
+function conflitos(sv) {
+  const fim = sv.fim || sv.inicio + 3600000;
+  return itensNoIntervalo(sv.inicio - 1, fim + 1).filter((i) => SUBTIPOS_ESCALA.includes(i.subtipo) && i.subtipo !== 'sobreaviso' && i.status === 'pendente'
+    && i.chave !== sv.chave && i.inicio < fim && fimEfetivo(i) > sv.inicio);
+}
+function assumirServico(t) {
+  const sv = t.servico;
+  store.salvarMissao({ id: `troca-${t.id}`, titulo: sv.titulo, categoria: sv.categoria || SUBTIPOS[sv.subtipo]?.categoria || 'operacional', subtipo: sv.subtipo, prioridade: 'critico',
+    inicio: sv.inicio, fim: sv.fim, diaTodo: !!sv.diaTodo, local: sv.local || '', detalhe: sv.detalhe || '', obs: `Troca com Cad. ${t.deNome}${t.motivo ? ' · ' + t.motivo : ''}${t.fiscal ? ' · fiscal: ' + t.fiscal : ''}`,
+    lembretes: lembretesPadrao(sv.subtipo, 'critico'), checklist: checklistPadrao(sv.subtipo),
+    escala: sv.escala ? { ...sv.escala, fardamento: sv.escala.fardamento || store.get().config.fardamentoPadrao || '' } : null,
+    trocas: [{ em: Date.now(), comQuem: 'Cad. ' + t.deNome, status: 'aprovada', motivo: 'Assumido por troca' }] });
+}
+function liberarServico(t) {
+  const sv = t.servico;
+  if (sv?.chave?.startsWith('ciclo:')) { const [, cid, ini] = sv.chave.split(':'); store.excecaoCiclo(cid, +ini, { tipo: 'pulado', motivo: `Troca com Cad. ${t.paraNome}` }); }
+  else if (sv?.chave && store.get().missoes.some((m) => m.id === sv.chave)) { store.salvarMissao({ id: sv.chave, status: 'pulado' }); store.registrarTroca(sv.chave, { comQuem: 'Cad. ' + t.paraNome, status: 'aprovada', motivo: t.motivo || '' }); }
 }
 function devolverServico(t) {
   const sv = t.servico;
   if (sv?.chave?.startsWith('ciclo:')) { const [, cid, ini] = sv.chave.split(':'); const c = store.get().ciclos.find((x) => x.id === cid); if (c?.excecoes?.[ini]?.tipo === 'pulado') store.excecaoCiclo(cid, +ini, null); }
   else if (sv?.chave) { const m = store.get().missoes.find((x) => x.id === sv.chave); if (m?.status === 'pulado') store.salvarMissao({ id: m.id, status: 'pendente' }); }
+}
+/**
+ * Mantém a agenda igual ao estado das trocas: aceita → quem pediu sai e quem aceitou entra;
+ * desfeita → volta como era. Roda ao abrir o app e a cada atualização da aba Turma.
+ */
+function aplicarTrocas() {
+  const ap = { ...(store.get().config.trocasAplicadas || {}) };
+  let mudou = false;
+  for (const t of ui.turma.trocas) {
+    if (t.ilegivel || !t.servico) continue;
+    if (t.status === 'aceita' && !ap[t.id]) { t.enviada ? liberarServico(t) : assumirServico(t); ap[t.id] = Date.now(); mudou = true; }
+    else if (t.status !== 'aceita' && ap[t.id]) { t.enviada ? devolverServico(t) : store.excluirMissao(`troca-${t.id}`); delete ap[t.id]; mudou = true; }
+  }
+  if (mudou) { store.setConfig({ trocasAplicadas: ap }); toast('Agenda atualizada pelas trocas de serviço'); }
+}
+async function acaoTroca(acao, id) {
+  const t = ui.turma.trocas.find((x) => x.id === id); if (!t) return;
+  try {
+    if (acao === 'aceita') {
+      const c = conflitos(t.servico);
+      if (c.length) { toast(`Você já tem ${SUBTIPOS[c[0].subtipo]?.rotulo || 'serviço'} nesse horário (${dataCurta(c[0])}). Não dá para aceitar.`); ui.turma.carregado = false; return carregarTurma(); }
+      if (t.servico.inicio <= Date.now()) { toast('Esse serviço já começou: não dá mais para aceitar.'); ui.turma.carregado = false; return carregarTurma(); }
+    }
+    if (['aceita', 'recusada', 'cancelada'].includes(acao)) {
+      await nuvem.responderTroca(id, acao);
+      t.status = acao;
+      aplicarTrocas();
+      toast(acao === 'aceita' ? 'Troca aceita: o serviço entrou na sua agenda. Agora avise o fiscal.' : acao === 'recusada' ? 'Troca recusada' : 'Troca desfeita: a agenda voltou como era');
+    }
+    if (acao === 'apagar') { await nuvem.apagarTroca(id); toast('Apagada'); }
+    if (acao === 'fiscal') return compartilharTexto(textoFiscal(t), 'Troca de serviço');
+    ui.turma.carregado = false; carregarTurma();
+  } catch (e) { toast(mensagemErro(e)); }
 }
 
 /* ============ eventos globais ============ */
@@ -1258,6 +1443,12 @@ document.addEventListener('click', async (e) => {
   if (ck) { const [id, i] = ck.dataset.ck.split(':'); store.marcarChecklist(id, +i); vibrar(10); return; }
   const tr = t.closest('[data-troca]'); if (tr) { tr.disabled = true; return acaoTroca(tr.dataset.troca, tr.dataset.id); }
   const escB = t.closest('[data-escala]'); if (escB) return abrirEscalaPublicada(escB.dataset.escala);
+  const discB = t.closest('[data-disc-rm]');
+  if (discB) {
+    const cfg = store.get().config;
+    store.setConfig({ disciplina: (cfg.disciplina || []).filter((r) => r.id !== discB.dataset.discRm) });
+    renderizar(); return toast('Anotação removida do histórico');
+  }
   const escRm = t.closest('[data-escala-rm]');
   if (escRm) { if (!confirm('Apagar esta escala publicada?')) return; try { await nuvem.apagarEscala(escRm.dataset.escalaRm); toast('Escala apagada'); ui.turma.carregado = false; carregarTurma(); } catch (err) { toast(mensagemErro(err)); } return; }
   const avRm = t.closest('[data-aviso-rm]');
@@ -1330,7 +1521,7 @@ document.addEventListener('click', async (e) => {
     case 'limpar-nao': ui.confirmarLimpar = false; renderizar(); break;
     case 'limpar-sim': ui.confirmarLimpar = false; removerHistorico(ac.dataset.chaves.split('|').filter(Boolean)); break;
     case 'salvar-nome': store.setConfig({ nome: $('#aj-nome').value.trim() || 'Cadete' }); toast('Nome salvo'); break;
-    case 'salvar-nomes': store.setConfig({ nomeCompleto: $('#aj-ncompleto').value.trim(), nomeGuerra: $('#aj-nguerra').value.trim() }); toast('Nomes salvos'); break;
+    case 'salvar-nomes': store.setConfig({ nomeCompleto: $('#aj-ncompleto').value.trim(), nomeGuerra: $('#aj-nguerra').value.trim(), fardamentoPadrao: $('#aj-fard').value.trim() }); toast('Salvo'); break;
     case 'importar-pdf': abrirImportar('importar'); break;
     case 'publicar-escala': abrirImportar('publicar'); break;
     case 'add-contato': {
@@ -1413,6 +1604,7 @@ document.addEventListener('click', async (e) => {
     }
   }
 });
+document.addEventListener('toggle', (e) => { if (e.target.classList?.contains('ck-serv')) ui.ckServAberto = e.target.open; }, true);
 document.addEventListener('input', (e) => {
   if (e.target.id === 'nt-min') {
     const v = parseFloat(e.target.value.replace(',', '.'));

@@ -16,7 +16,7 @@ import { carregar, confirmarSenha } from './acesso.js';
 import { store } from './store.js';
 import { chaveDaConta, guardarChaveDaSenha, cifrar, decifrar, novoPar, guardarPar, lerPar, chaveComum } from './cripto.js';
 
-export const VERSAO_APP = '2.0.0';
+export const VERSAO_APP = '2.2.0';
 let conta = null; // { uid, email, admin, papel }
 const ouvintes = new Set();
 const status = { cofre: 'desligado', ultimaSinc: 0, erro: '', push: 'desligado' };
@@ -187,10 +187,10 @@ async function chaveComOutro(pubTxt) {
  * Pede a troca de um serviço a um colega da mesma turma.
  * Os dados do serviço vão criptografados: só os dois conseguem ler.
  */
-export async function pedirTroca({ colega, meuPerfil, servico, motivo }) {
+export async function pedirTroca({ colega, meuPerfil, servico, motivo, fiscal }) {
   const { fs, db } = await carregar();
   const k = await chaveComOutro(colega.pub);
-  const cifra = await cifrar(k, { servico, motivo });
+  const cifra = await cifrar(k, { servico, motivo, fiscal });
   await fs.addDoc(fs.collection(db, 'trocas'), {
     de: conta.email, para: colega.email, turma: meuPerfil.turma,
     deNome: meuPerfil.nomeGuerra || meuPerfil.nome, paraNome: colega.nomeGuerra || colega.nome,

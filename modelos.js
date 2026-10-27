@@ -32,7 +32,7 @@ const ROTINA = {
   viaturas_pm:      { hora: [6, 50], regra: 'Apresentar às 06h50 aos responsáveis de "Viaturas EsFO"' },
   salas_comando:    { hora: [18, 0], fim: [21, 0], regra: 'Após o expediente; apresentar ao Cmt. do Bloco até 21h' },
   bloco_salas:      { hora: [18, 0], regra: 'Após as 18h; apresentar ao Cmt. do Bloco ao terminar' },
-  lavanderia:       { diaTodo: true, diaSeguinte: true, regra: 'Feita no dia seguinte ao da escala' },
+  lavanderia:       { hora: [6, 20], diaSeguinte: true, regra: 'Feita no dia seguinte; pronta para revista às 06h20' },
   museu_esfo:       { diaTodo: true, regra: 'Sem horário fixo; aos domingos, aspirar o tapete' },
   manutencao_adm:   { hora: [18, 0], regra: 'Após as 18h, até o pernoite (fiscalização do Respondente)' },
 };
@@ -59,7 +59,8 @@ export function horarioPadrao(subtipo, dia) {
   const r = ROTINA[subtipo];
   if (r) {
     if (r.diaTodo) return { inicio: em(dia, 0, 0, r.diaSeguinte ? 1 : 0), fim: null, diaTodo: true, regra: r.regra };
-    return { inicio: em(dia, ...r.hora), fim: r.fim ? em(dia, ...r.fim) : null, diaTodo: false, regra: r.regra };
+    const dd = r.diaSeguinte ? 1 : 0;
+    return { inicio: em(dia, ...r.hora, dd), fim: r.fim ? em(dia, ...r.fim, dd) : null, diaTodo: false, regra: r.regra };
   }
   return null;
 }
@@ -104,6 +105,14 @@ export const MODELOS = [
     obs: 'Banheiros do bloco ADM, corredores, grimpas e lixo dos banheiros, da copa e do entorno.', ...RT },
   // ---- Estágio e outras escalas
   { grupo: 'Estágio e outras escalas', id: 'estagio_cpu', rotulo: 'Estágio CPU', subtipo: 'estagio_cpu', titulo: 'Estágio CPU', local: '', escala: { funcao: 'Estagiário' }, ...OP },
+  { grupo: 'Estágio e outras escalas', id: 'representacao', rotulo: 'Representação', subtipo: 'representacao', titulo: 'Representação – ', hora: 17, local: '', escala: { funcao: 'Representação' },
+    obs: 'Contatar o cadete mais antigo da representação para as orientações. Cumprir os horários e o fardamento da escala.', ...OP },
+  { grupo: 'Estágio e outras escalas', id: 'desfile', rotulo: 'Desfile', subtipo: 'desfile', categoria: 'administrativo', prioridade: 'importante', titulo: 'Desfile – ', diaTodo: true, local: 'APMG', lembretes: [1440] },
+  { grupo: 'Estágio e outras escalas', id: 'funcao_comando', rotulo: 'Função de comando (semana)', subtipo: 'funcao_comando', categoria: 'administrativo', prioridade: 'importante', titulo: '', diaTodo: true, local: 'Batalhão EsFO', lembretes: [1440] },
+  { grupo: 'Estágio e outras escalas', id: 'suplencia', rotulo: 'Suplência de comando', subtipo: 'suplencia', categoria: 'administrativo', prioridade: 'importante', titulo: 'Suplente – ', diaTodo: true, local: 'Batalhão EsFO', lembretes: [1440],
+    obs: 'Procurar o titular da função até sábado às 19h.' },
+  { grupo: 'Estágio e outras escalas', id: 'mce', rotulo: 'MCE (Escala Especial / LC)', subtipo: 'mce', categoria: 'administrativo', prioridade: 'critico', titulo: 'MCE – Escala Especial ', hora: 14, local: 'EsFO / APMG', lembretes: [1440, 120, 30],
+    obs: 'Apresentar-se ao Dia-à-EsFO. Participar do hasteamento e do arriamento da Bandeira enquanto estiver na APMG.' },
   { grupo: 'Estágio e outras escalas', id: 'escala_especial', rotulo: 'Escala especial', subtipo: 'escala_especial', titulo: '', hora: 7, ...OP },
   // ---- Acadêmico
   { grupo: 'Acadêmico', id: 'prova', rotulo: 'Prova', subtipo: 'prova', categoria: 'academico', prioridade: 'critico', titulo: 'Prova de ', hora: 8, lembretes: [2880, 1440, 120] },

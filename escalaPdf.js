@@ -68,7 +68,7 @@ export function detectarTipo(itens) {
 /* ------------------------------------------------------------------ */
 
 /** Agrupa itens em linhas (y próximos) e junta pedaços colados (acentos quebrados). */
-function linhas(itens, tolerancia = 3) {
+export function linhas(itens, tolerancia = 3) {
   const ord = [...itens].sort((a, b) => a.y - b.y || a.x - b.x);
   const out = [];
   for (const it of ord) {
@@ -82,7 +82,7 @@ function linhas(itens, tolerancia = 3) {
 }
 
 /** Junta itens de uma célula: pedaços colados sem espaço, palavras com espaço. */
-function juntar(itens) {
+export function juntar(itens) {
   const ord = [...itens].sort((a, b) => a.x - b.x);
   let txt = '';
   let fim = null;
@@ -99,7 +99,7 @@ function juntar(itens) {
  * rótulo fica centralizado verticalmente no seu bloco de linhas.
  * Devolve, para cada rótulo, o intervalo [inicio, fim] de índices.
  */
-function blocosCentralizados(ysLinhas, ysRotulos) {
+export function blocosCentralizados(ysLinhas, ysRotulos) {
   const blocos = [];
   let s = 0;
   ysRotulos.forEach((yr, k) => {
