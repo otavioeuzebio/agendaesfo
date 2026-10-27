@@ -181,6 +181,9 @@ function cartaoEmServico(it, agora) {
   </div>`;
 }
 
+/** Turmas da EsFO (mesma grafia das Planilhas de Anotados). */
+const TURMAS = ['3° CFO', 'CHOE', '1° CFO/1', '1° CFO/2'];
+
 /* ---- Escalas completas (todos os cadetes) ---- */
 /** Guarda o documento e manda para os outros aparelhos (junto da agenda criptografada). */
 function guardarDocSinc(doc) {
@@ -935,10 +938,12 @@ function renderTurma() {
         <p>Para trocar serviços pelo app, entre na turma. Os colegas da mesma turma veem só seu nome, nome de guerra e turma — nunca a sua agenda.</p>
         <div class="campo"><label class="lbl" for="pf-nome">Nome completo</label><input id="pf-nome" value="${esc(p?.nome || c.nomeCompleto || '')}"></div>
         <div class="dupla"><div class="campo"><label class="lbl" for="pf-guerra">Nome de guerra</label><input id="pf-guerra" value="${esc(p?.nomeGuerra || c.nomeGuerra || '')}"></div>
-          <div class="campo"><label class="lbl" for="pf-turma">Turma</label><input id="pf-turma" placeholder="Ex.: CFO 2º ano" value="${esc(p?.turma || c.turma || '')}" maxlength="40"></div></div>
-        <p class="dica">Escreva a turma igual aos colegas (ex.: todos "CFO 2º ano"): só quem tem a mesma turma aparece para troca.</p>
+          <div class="campo"><label class="lbl" for="pf-turma">Turma</label><select id="pf-turma">${(() => { const atual = p?.turma || c.turma || '';
+            return `<option value=""${TURMAS.includes(atual) ? '' : ' selected'} disabled>Escolha a turma</option>` + TURMAS.map((t) => `<option${t === atual ? ' selected' : ''}>${t}</option>`).join(''); })()}</select></div></div>
+        <p class="dica">Só quem está na mesma turma aparece para troca de serviço.</p>
         <div class="linha"><button class="btn pri" type="button" data-acao="salvar-perfil">${p ? 'Salvar' : 'Entrar na turma'}</button>${p ? '<button class="btn" type="button" data-acao="cancelar-perfil">Cancelar</button>' : ''}</div></div>`
-      : `<div class="cartao-n"><h3>Cad. ${esc(p.nomeGuerra || p.nome)} · ${esc(p.turma)}</h3><p>${esc(p.nome)}</p>
+      : `${TURMAS.includes(p.turma) ? '' : `<div class="aviso"><p>A turma "${esc(p.turma)}" não está na lista nova. Escolha a sua para os colegas acharem você nas trocas.</p><button class="btn pri" type="button" data-acao="editar-perfil">Escolher turma</button></div>`}
+        <div class="cartao-n"><h3>Cad. ${esc(p.nomeGuerra || p.nome)} · ${esc(p.turma)}</h3><p>${esc(p.nome)}</p>
           <div class="linha"><button class="btn" type="button" data-acao="editar-perfil">Editar</button><button class="btn link dir" type="button" data-acao="sair-turma">Sair da turma</button></div></div>`}
     </div>
 
@@ -1945,7 +1950,7 @@ document.addEventListener('click', async (e) => {
     case 'cancelar-perfil': ui.turma.editarPerfil = false; renderTurma(); break;
     case 'salvar-perfil': {
       const dados = { nome: $('#pf-nome').value, nomeGuerra: $('#pf-guerra').value, turma: $('#pf-turma').value, participar: true };
-      if (!dados.nome.trim() || !dados.nomeGuerra.trim() || !dados.turma.trim()) { toast('Preencha nome, nome de guerra e turma'); break; }
+      if (!dados.nome.trim() || !dados.nomeGuerra.trim() || !TURMAS.includes(dados.turma)) { toast('Preencha nome, nome de guerra e escolha a turma'); break; }
       ac.disabled = true;
       try {
         ui.turma.perfil = await nuvem.salvarPerfil(dados); ui.turma.editarPerfil = false;
