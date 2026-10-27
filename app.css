@@ -394,3 +394,11 @@ select { border: 1.5px solid var(--line); border-radius: 10px; padding: 10px; ba
 .barra-ha { height: 8px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }
 .barra-ha i { display: block; height: 100%; background: var(--cor); }
 .cinza { color: var(--muted); }
+
+/* escalas completas */
+.func { display: grid; gap: 4px; padding: 8px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); }
+.func.minha { border-color: var(--gold); box-shadow: inset 4px 0 0 var(--gold); }
+.func .nomes { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: .92rem; }
+.eu { font-weight: 800; color: var(--gold); }
+.imp-item.minha { box-shadow: 0 0 0 2px var(--gold); }
+.todos-dias { overflow-x: auto; }

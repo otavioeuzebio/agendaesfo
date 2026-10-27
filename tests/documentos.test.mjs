@@ -138,3 +138,9 @@ test('NAMCE: códigos viram horários do fim de semana; anulada não', () => {
     ['MCE – Escala Especial 3', '31/10 7:15', '31/10 11:15']]);
   assert.deepEqual(registrosDisciplina(d, meu).map((r) => r.mce), ['EEsp 2 + EEsp 3', 'anulada', 'LC 1']);
 });
+
+test('representação: CPF no mesmo pedaço de texto do nome é descartado', () => {
+  const o = representacao().map((i) => (i.s === 'Carla Teste Antiga' ? { ...i, s: 'Carla Teste Antiga 000.000.000-00' } : i)).filter((i) => !(i.s === '000.000.000-00' && i.y === 320));
+  const d = lerDocumento('representacao', o);
+  assert.equal(d.linhas[0].nome, 'Carla Teste Antiga');
+});

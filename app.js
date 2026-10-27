@@ -17,6 +17,7 @@ import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
 import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
+import { listarDocs, guardarDoc, apagarDoc, ehMeu, filtrar, agrupar as agruparLinhas, datasDoDoc, TIPOS_CONSULTA } from './documentos.js';
 import { ehQts, lerQts, blocosDoDia, aulaAgora, guardarSemana, semanaDoDia, siglaBase, ehIndisponivel } from './qts.js';
 import { configRevista, diaDeRevista, revistaDoDia, situacaoAlimento, ROTULO_ALIMENTO, alimentosEmAlerta, lembretesExtras, relatoriosACriar, PRAZO_RELATORIO_PADRAO, ymd as ymdR } from './rotina.js';
 import { gcalConfigurado, sincronizarAgenda, desconectar as gcalDesconectar } from './gcal.js';
@@ -176,6 +177,68 @@ function cartaoEmServico(it, agora) {
     ${m?.checklist?.length ? `<details class="ck-serv"${(ui.ckServAberto ?? (pendentesChecklist(m) > 0 && agora < it.inicio + 3600000)) ? ' open' : ''}><summary>Checklist · ${m.checklist.length - pendentesChecklist(m)}/${m.checklist.length} conferidos</summary><div class="checklist">${m.checklist.map((c, i) => linhaChecklist(m, i, c)).join('')}</div></details>` : ''}
     <small>Durante o serviço, só os lembretes críticos tocam; os demais chegam em silêncio.</small>
   </div>`;
+}
+
+/* ---- Escalas completas (todos os cadetes) ---- */
+/** Documentos para consulta: os PDFs lidos neste aparelho + as escalas publicadas na turma. */
+function docsConsulta() {
+  const locais = listarDocs(ui.conta?.uid).map((d) => ({ ...d, origem: 'aparelho' }));
+  const ids = new Set(locais.map((d) => d.id));
+  const turma = (ui.turma.escalas || []).filter((e) => TIPOS_CONSULTA[e.tipo] && e.linhas?.length)
+    .map((e) => ({ id: 'turma-' + e.id, tipo: e.tipo, titulo: e.titulo, linhas: e.linhas, meta: {}, origem: 'turma', importadoEm: e.criadoEm?.toMillis?.() || 0 }))
+    .filter((d) => !ids.has(d.id));
+  return [...locais, ...turma];
+}
+function renderTodos(agora) {
+  const docs = docsConsulta();
+  const T = ui.todos ||= { doc: '', busca: '', data: '' };
+  if (!docs.find((d) => d.id === T.doc)) T.doc = docs[0]?.id || '';
+  const doc = docs.find((d) => d.id === T.doc);
+  const cfg = store.get().config;
+  const hoje = paraData(agora);
+  const nome = (l) => `<span class="${ehMeu(l.nome, cfg) ? 'eu' : ''}">${esc([l.grad, l.nome].filter(Boolean).join(' '))}</span>`;
+  const f = (d) => d ? d.split('-').reverse().slice(0, 2).join('/') : '';
+  let corpo = '';
+  if (!doc) corpo = '<div class="vazio">Nenhuma escala guardada. Importe um PDF (Serviço Interno, Rotina, Desfile, Representação, Planilha de Anotados ou NAMCE) pelo botão dourado e ele fica disponível aqui para consulta.</div>';
+  else {
+    const busca = T.busca.trim();
+    const linhas = filtrar(doc.linhas, busca);
+    if (doc.tipo === 'interna' || doc.tipo === 'rotina') {
+      const { datas, abrir } = datasDoDoc(doc, hoje);
+      if (!datas.includes(T.data)) T.data = abrir;
+      const doDia = busca ? linhas : linhas.filter((l) => l.data === T.data);
+      const porData = agruparLinhas(doDia, (l) => l.data);
+      corpo = `${busca ? '' : `<div class="semana todos-dias" role="group" aria-label="Escolher dia">${datas.map((d) => `<button type="button" data-todosdata="${d}" aria-pressed="${d === T.data}"><span>${d === hoje ? 'HOJE' : DIAS_CURTOS[new Date(d + 'T12:00').getDay()].toUpperCase()}</span><b class="num">${+d.slice(8)}</b><i class="pt" style="${doc.linhas.some((l) => l.data === d && ehMeu(l.nome, cfg)) ? '' : 'visibility:hidden'}"></i></button>`).join('')}</div>`}
+        ${porData.length ? porData.map((g) => `<div class="secao">${busca || porData.length > 1 ? `<h2 class="lbl">${esc(rotuloDia(new Date(g.chave + 'T12:00').getTime(), agora))} · ${f(g.chave)}</h2>` : ''}
+          ${agruparLinhas(g.itens, (l) => `${l.subtipo}|${l.detalhe || ''}`).map((fn) => {
+            const l0 = fn.itens[0];
+            const rot = (SUBTIPOS[l0.subtipo]?.rotulo || l0.funcao || 'Função') + (l0.detalhe && l0.subtipo !== 'sobreaviso' ? ' · ' + l0.detalhe : l0.subtipo === 'sobreaviso' && l0.detalhe ? ' · ' + l0.detalhe : '');
+            return `<div class="func${fn.itens.some((l) => ehMeu(l.nome, cfg)) ? ' minha' : ''}"><span class="lbl">${esc(rot)}</span><div class="nomes">${fn.itens.map(nome).join('')}</div></div>`;
+          }).join('')}</div>`).join('') : `<div class="vazio">${busca ? 'Ninguém com esse nome nesta escala.' : 'Nada neste dia.'}</div>`}`;
+    } else if (doc.tipo === 'desfile') {
+      corpo = `${doc.linhas[0]?.data ? `<small class="cinza">Semana ${f(doc.linhas[0].data)} a ${f(doc.linhas[0].ate)}</small>` : ''}
+        ${linhas.map((l) => `<div class="func${ehMeu(l.nome, cfg) ? ' minha' : ''}"><span class="lbl">${esc(l.detalhe)}</span><div class="nomes">${nome(l)}</div></div>`).join('') || '<div class="vazio">Ninguém com esse nome.</div>'}`;
+    } else if (doc.tipo === 'representacao') {
+      const l0 = doc.linhas[0] || {};
+      corpo = `<div class="cartao-n"><h3>${esc(l0.evento || doc.titulo)}</h3><p>${esc([l0.data && f(l0.data), l0.horarioTxt, l0.local, l0.fardamento && 'Fardamento: ' + l0.fardamento].filter(Boolean).join('\n'))}</p></div>
+        ${agruparLinhas(linhas, (l) => l.detalhe).map((g) => `<div class="func"><span class="lbl">${esc(g.chave === 'Titular' ? 'Escalados' : g.chave)} (${g.itens.length})</span><div class="nomes">${g.itens.map(nome).join('')}</div></div>`).join('') || '<div class="vazio">Ninguém com esse nome.</div>'}`;
+    } else {
+      // Planilha de Anotados / NAMCE: por turma
+      corpo = agruparLinhas(linhas, (l) => l.secao || '').map((g) => `<div class="secao"><h2 class="lbl">${esc(g.chave)} <small>${g.itens.length}</small></h2>
+        ${g.itens.map((l) => `<div class="imp-item anot ${l.tipoAnot === 'FO+' ? 'pos' : 'neg'}${ehMeu(l.nome, cfg) ? ' minha' : ''}"><span><b>${esc(l.nome)}</b>${l.pel ? ' · ' + esc(l.pel) : ''} · ${esc(f(l.data))}<br>${esc(l.texto)}
+          <small>${esc([l.tipoAnot, l.anotador, l.mce && 'MCE: ' + l.mce].filter(Boolean).join(' · '))}</small></span></div>`).join('')}</div>`).join('') || '<div class="vazio">Ninguém com esse nome.</div>';
+    }
+  }
+  $('#v-escalas').innerHTML = `<div class="secao" style="gap:14px">
+    <div class="linha"><button class="btn" type="button" data-acao="esc-minha">‹ Minha agenda</button><h2 class="titulo-vista" style="margin:0">Escalas completas</h2></div>
+    ${docs.length ? `<div class="campo"><label class="lbl" for="td-doc">Documento</label><select id="td-doc">${docs.map((d) => `<option value="${esc(d.id)}"${d.id === T.doc ? ' selected' : ''}>${esc(d.titulo || TIPOS_CONSULTA[d.tipo])}${d.origem === 'turma' ? ' (turma)' : ''}</option>`).join('')}</select></div>
+      <div class="linha"><div class="campo" style="flex:1"><input id="td-busca" type="search" placeholder="Buscar nome, função ou pelotão" value="${esc(T.busca)}"></div>
+        ${cfg.nomeGuerra || cfg.nomeCompleto ? `<button class="btn" type="button" data-acao="td-eu">Eu</button>` : ''}</div>` : ''}
+    ${corpo}
+    ${doc ? `<p class="dica">${doc.origem === 'turma' ? 'Publicada na turma.' : `Lida neste aparelho ${esc(rotuloDia(doc.importadoEm, agora).toLowerCase())}; fica só aqui (não vai para a nuvem).`} Seu nome aparece destacado.</p>
+      ${doc.origem === 'aparelho' ? '<button class="btn link" type="button" data-acao="td-apagar">Apagar este documento do aparelho</button>' : ''}` : ''}
+  </div>`;  const sel = $('.todos-dias [aria-pressed="true"]');
+  if (sel) sel.parentElement.scrollLeft = sel.offsetLeft - sel.parentElement.clientWidth / 2 + sel.clientWidth / 2;
 }
 
 /* ---- QTS (Quadro de Trabalho Semanal) ---- */
@@ -377,6 +440,7 @@ function renderPainel(agora) {
 
 function renderEscalas(agora) {
   const e = ui.esc;
+  if (e.todos) return renderTodos(agora);
   const dias = e.modo === 'mes' ? gradeDoMes(e.ref.getFullYear(), e.ref.getMonth()) : semanaDe(e.ref);
   const de = dias[0].getTime(), ate = somaDias(dias[dias.length - 1], 1).getTime();
   const itens = itensNoIntervalo(de, ate, { incluirPulados: true });
@@ -412,6 +476,7 @@ function renderEscalas(agora) {
       ${chip({ rotulo: 'Mês', ativo: e.modo === 'mes', dados: 'data-modo="mes"', peq: true })}
       ${chip({ rotulo: 'Semana', ativo: e.modo === 'semana', dados: 'data-modo="semana"', peq: true })}
       ${chip({ rotulo: 'Hoje', ativo: false, dados: 'data-modo="hoje"', peq: true })}
+      ${chip({ rotulo: 'Todos', ativo: false, dados: 'data-acao="esc-todos"', peq: true })}
       <span class="dir it-m"><b style="color:var(--c-operacional)" class="num">${diasServico}</b> dia${diasServico === 1 ? '' : 's'} de serviço</span>
     </div>
     <div class="cal${e.modo === 'semana' ? ' semanal' : ''}">${DIAS_CURTOS.map((d) => `<span class="dow">${d}</span>`).join('')}${celulas}</div>
@@ -1329,7 +1394,8 @@ function desenharImportar() {
         <div class="imp-lista">${missoes.map((m, i) => `<label class="imp-item${existentes.has(m.id) ? ' existe' : ''}"><input type="checkbox" data-imp-sel="${i}" checked>
           <span><b>${esc(m.titulo)}</b>${m.detalhe && m.subtipo !== 'sobreaviso' ? ' · ' + esc(m.detalhe) : ''}<small>${esc(rotuloDia(m.inicio))} · ${esc(horario(m))}${existentes.has(m.id) ? ' · já está na agenda (horário será atualizado)' : ''}</small></span></label>`).join('')}</div>
         <button class="btn pri" type="button" data-imp="adicionar">Adicionar à agenda</button>`}
-    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}`;
+    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}
+    <button class="btn link" type="button" data-imp="ver-todos">Ver a escala completa (todos)</button>`;
 }
 function desenharQtsImport(imp, corpo) {
   const q = imp.qts;
@@ -1395,7 +1461,8 @@ function desenharDocumento(imp, cfg, corpo, nomes) {
     : imp.registros.length ? '<button class="btn pri" type="button" data-imp="adicionar">Guardar no histórico disciplinar</button>' : '';
   corpo.innerHTML = `${cab}${meio}${lista}${botao}
     ${disciplinar && minhas.length ? '<p class="dica">As anotações ficam só na sua agenda (criptografada). Veja em Missões › Notas › Disciplina.</p>' : ''}
-    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}`;
+    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}
+    ${TIPOS_CONSULTA[doc.tipo] && doc.linhas.length ? '<button class="btn link" type="button" data-imp="ver-todos">Ver a escala completa (todos)</button>' : ''}`;
 }
 async function lerPdfEscolhido(arquivo) {
   ui.imp = { ...(ui.imp || { modo: 'importar' }), etapa: 'lendo', nomeArquivo: arquivo.name };
@@ -1416,6 +1483,7 @@ async function lerPdfEscolhido(arquivo) {
       const doc = EXT.lerDocumento(extra, itens);
       if (!doc.semTexto && !doc.linhas.length) throw new Error(`Não encontrei a tabela da ${EXT.NOMES_DOC[extra]} neste PDF.`);
       Object.assign(ui.imp, { etapa: 'resultado', tipo: extra, doc, linhas: doc.linhas, origem: 'pdf', funcao: '', funcaoOutra: '', sexta: '' });
+      if (TIPOS_CONSULTA[extra] && doc.linhas.length) ui.imp.docId = guardarDoc(ui.conta?.uid, { tipo: extra, titulo: doc.titulo, linhas: doc.linhas, numero: doc.numero, meta: { evento: doc.evento, local: doc.local, fardamento: doc.fardamento } });
       desenharImportar();
       return;
     }
@@ -1424,6 +1492,7 @@ async function lerPdfEscolhido(arquivo) {
     const linhas = tipo === 'interna' ? pdf.lerEscalaInterna(itens) : pdf.lerEscalaRotina(itens, new Date());
     if (!linhas.length) throw new Error('Não encontrei a tabela da escala neste PDF.');
     Object.assign(ui.imp, { etapa: 'resultado', tipo, linhas, origem: 'pdf' });
+    ui.imp.docId = guardarDoc(ui.conta?.uid, { tipo, titulo: tituloEscala(ui.imp), linhas });
   } catch (e) {
     console.error(e);
     Object.assign(ui.imp, { etapa: 'erro', erro: e.message?.startsWith('Não') ? e.message : 'Não foi possível ler este PDF.' });
@@ -1471,11 +1540,17 @@ $('#importar-corpo').addEventListener('click', async (e) => {
     ui.qts = { dia: ymdL(Math.max(Date.now(), new Date(imp.qts.dias[0].data + 'T00:00').getTime())), modo: 'dia' };
     ui.vista = 'qts'; renderizar(); toast(`QTS da semana ${imp.qts.semana} salvo`);
   }
+  if (b.dataset.imp === 'ver-todos') {
+    if (!imp.docId) imp.docId = guardarDoc(ui.conta?.uid, { tipo: imp.tipo, titulo: imp.doc?.titulo || imp.nomeArquivo || tituloEscala(imp), linhas: imp.linhas, numero: imp.doc?.numero, meta: imp.doc ? { evento: imp.doc.evento, local: imp.doc.local, fardamento: imp.doc.fardamento } : {} });
+    fecharFolha('#dlg-importar');
+    ui.todos = { doc: imp.docId, busca: '', data: '' };
+    ui.vista = 'escalas'; ui.esc.todos = true; renderizar();
+  }
   if (b.dataset.imp === 'ir-publicar') { imp.modo = 'publicar'; desenharImportar(); }
   if (b.dataset.imp === 'publicar') {
     b.disabled = true;
     try {
-      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || (imp.qts ? imp.qts.titulo : imp.doc ? imp.doc.titulo : tituloEscala(imp)), linhas: imp.linhas });
+      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || (imp.qts ? imp.qts.titulo : imp.doc ? imp.doc.titulo : tituloEscala(imp)), linhas: JSON.parse(JSON.stringify(imp.linhas).replace(/\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g, '')) });
       fecharFolha('#dlg-importar'); toast('Escala publicada para a turma');
       ui.turma.carregado = false; carregarTurma();
     } catch (err) { b.disabled = false; toast(mensagemErro(err)); }
@@ -1641,6 +1716,7 @@ document.addEventListener('click', async (e) => {
   if (ck) { const [id, i] = ck.dataset.ck.split(':'); store.marcarChecklist(id, +i); vibrar(10); return; }
   const tr = t.closest('[data-troca]'); if (tr) { tr.disabled = true; return acaoTroca(tr.dataset.troca, tr.dataset.id); }
   const escB = t.closest('[data-escala]'); if (escB) return abrirEscalaPublicada(escB.dataset.escala);
+  const tdd = t.closest('[data-todosdata]'); if (tdd) { ui.todos.data = tdd.dataset.todosdata; renderizar(); return; }
   const qn = t.closest('[data-qtsnav]');
   if (qn) { const sems = store.get().config.qts || []; const i = sems.indexOf(semanaDoDia(sems, ui.qts.dia)) + +qn.dataset.qtsnav; if (sems[i]) ui.qts.dia = sems[i].dias[0].data; renderizar(); return; }
   const qm = t.closest('[data-qtsmodo]'); if (qm) { ui.qts.modo = qm.dataset.qtsmodo; renderizar(); return; }
@@ -1730,6 +1806,10 @@ document.addEventListener('click', async (e) => {
     case 'salvar-nome': store.setConfig({ nome: $('#aj-nome').value.trim() || 'Cadete' }); toast('Nome salvo'); break;
     case 'salvar-nomes': store.setConfig({ nomeCompleto: $('#aj-ncompleto').value.trim(), nomeGuerra: $('#aj-nguerra').value.trim(), fardamentoPadrao: $('#aj-fard').value.trim() }); toast('Salvo'); break;
     case 'importar-pdf': abrirImportar('importar'); break;
+    case 'esc-todos': ui.esc.todos = true; renderizar(); break;
+    case 'esc-minha': ui.esc.todos = false; renderizar(); break;
+    case 'td-eu': ui.todos.busca = store.get().config.nomeGuerra || store.get().config.nomeCompleto || ''; renderizar(); break;
+    case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
     case 'revista-pronta': { const r = revistaDoDia(store.get().config, Date.now()); store.setConfig({ revistaHoje: { data: r.dia, ok: r.itens.map((_, i) => i), feita: true } }); vibrar(25); toast('Revista pronta. Bom dia!'); break; }
     case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
     case 'rv-padrao': { const { itens, ...resto } = store.get().config.revista || {}; store.setConfig({ revista: resto }); toast('Itens padrão restaurados'); break; }
@@ -1832,6 +1912,13 @@ document.addEventListener('input', (e) => {
     if (v >= 0 && v <= 10) { clearTimeout(ui.tMin); ui.tMin = setTimeout(() => { store.setConfig({ mediaMinima: v }); const el = $('#nt-min'); el?.focus(); }, 500); }
     return;
   }
+  if (e.target.id === 'td-busca') {
+    ui.todos.busca = e.target.value;
+    const pos = e.target.selectionStart;
+    renderTodos(Date.now());
+    const novo = $('#td-busca'); novo.focus(); try { novo.setSelectionRange(pos, pos); } catch (err) {}
+    return;
+  }
   if (e.target.id === 'm-busca') {
     ui.mis.busca = e.target.value;
     const pos = e.target.selectionStart;
@@ -1840,6 +1927,7 @@ document.addEventListener('input', (e) => {
   }
 });
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'td-doc') { ui.todos = { doc: e.target.value, busca: '', data: '' }; renderizar(); return; }
   const rv = e.target.closest?.('[data-rev]'); if (!rv) return;
   const r = revistaDoDia(store.get().config, Date.now());
   const ok = new Set(r.ok); rv.checked ? ok.add(+rv.dataset.rev) : ok.delete(+rv.dataset.rev);
@@ -1909,7 +1997,7 @@ function tique() {
   if (minuto !== ultimoMinuto) {
     ultimoMinuto = minuto;
     aplicarRelatorios();
-    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
+    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && document.activeElement?.id !== 'td-busca' && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
     verificarLembretes();
   }
 }

@@ -21,6 +21,8 @@ const deYmd = (s) => { const [a, m, d] = s.split('-').map(Number); return new Da
 const somaDias = (s, n) => { const d = deYmd(s); d.setDate(d.getDate() + n); return ymd(d); };
 const ts = (dia, h = 0, m = 0) => { const d = deYmd(dia); d.setHours(h, m, 0, 0); return d.getTime(); };
 const slug = (s) => normalizar(s).replace(/[^a-z0-9]+/g, '').slice(0, 24);
+/** CPF (nunca guardado): 000.000.000-00 ou 00000000000 junto do nome. */
+export const CPF = /\b\d{3}\.?\d{3}\.?\d{3}-?\d{2}\b/g;
 const ano4 = (a) => (String(a).length === 2 ? 2000 + +a : +a);
 
 export const NOMES_DOC = {
@@ -156,7 +158,7 @@ function lerRepresentacao(itens) {
   let grupo = 'Titular';
   let atual = null;
   for (const l of linhasPorPagina(corpo, 4)) {
-    const sem = l.itens.filter((i) => !/^\d{3}\.\d{3}\.\d{3}-\d{2}$/.test(i.s.trim()));
+    const sem = l.itens.map((i) => ({ ...i, s: i.s.replace(CPF, '').trim() })).filter((i) => i.s);
     const txt = juntar(sem);
     if (/^sobreaviso$/i.test(txt)) { grupo = 'Sobreaviso'; atual = null; continue; }
     if (/s[aã]o jos[eé] dos pinhais|oficial p\/1|^\d[º°]\s*ten|^cap\.|^maj\./i.test(txt)) { atual = null; continue; }
