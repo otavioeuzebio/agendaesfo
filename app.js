@@ -17,6 +17,7 @@ import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
 import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
+import { ehQts, lerQts, blocosDoDia, aulaAgora, guardarSemana, semanaDoDia, siglaBase, ehIndisponivel } from './qts.js';
 import { configRevista, diaDeRevista, revistaDoDia, situacaoAlimento, ROTULO_ALIMENTO, alimentosEmAlerta, lembretesExtras, relatoriosACriar, PRAZO_RELATORIO_PADRAO, ymd as ymdR } from './rotina.js';
 import { gcalConfigurado, sincronizarAgenda, desconectar as gcalDesconectar } from './gcal.js';
 import { gerarICS, baixar } from './ics.js';
@@ -177,6 +178,98 @@ function cartaoEmServico(it, agora) {
   </div>`;
 }
 
+/* ---- QTS (Quadro de Trabalho Semanal) ---- */
+const corSigla = (s) => { let h = 0; for (const c of siglaBase(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return `hsl(${h} 55% 45%)`; };
+const ymdL = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+const nomeDisc = (sem, sigla) => sem?.legenda?.[siglaBase(sigla)]?.nome || '';
+const capitaliza = (t) => String(t || '').toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase()).replace(/\b(Da|De|Do|Dos|Das|E)\b/g, (m) => m.toLowerCase());
+function rotuloQuando(dataYmd, hhmmTxt, agora) {
+  const d = new Date(`${dataYmd}T${hhmmTxt}:00`).getTime();
+  return `${rotuloDia(d, agora).toLowerCase()} às ${hhmmTxt}`;
+}
+/** Aula agora / próxima no painel. */
+function cartaoAula(agora) {
+  const sems = store.get().config.qts || [];
+  if (!sems.length || !mesmoDia(ui.diaPainel, inicioDoDia(agora))) return '';
+  const { atual, proxima } = aulaAgora(sems, agora);
+  if (!atual && !proxima) return '';
+  const linha = (b, tipo) => `<div class="aula-mini" style="--cor:${corSigla(b.sigla)}"><span class="sig">${esc(b.sigla)}</span>
+    <span><b>${tipo}</b> ${esc(capitaliza(nomeDisc(b.semana, b.sigla)) || b.sigla)}${b.local ? ' · ' + esc(b.local) : ''}
+    <small>${tipo === 'Agora' ? `até ${b.fim} · faltam ${contagem(b.fimMs - agora)}` : `${esc(rotuloQuando(b.data, b.ini, agora))}${b.iniMs - agora < 6 * 3600000 ? ' · em ' + contagem(b.iniMs - agora) : ''}`}</small></span></div>`;
+  return `<button type="button" class="cartao-aula" data-ir="qts">${atual ? linha(atual, 'Agora') : ''}${proxima ? linha(proxima, atual ? 'Depois' : 'Próxima') : ''}</button>`;
+}
+
+function renderQts(agora) {
+  const sems = store.get().config.qts || [];
+  const q = ui.qts ||= { dia: ymdL(agora), modo: 'dia' };
+  if (!sems.length) {
+    $('#v-qts').innerHTML = `<div class="secao" style="gap:14px"><h2 class="titulo-vista">QTS</h2>
+      <div class="vazio">Importe o PDF do <b>Quadro de Trabalho Semanal</b> para ver as aulas da semana, a aula de agora e a carga horária de cada disciplina.</div>
+      <button class="btn ouro" type="button" data-acao="importar-pdf">Importar QTS (PDF)</button></div>`;
+    return;
+  }
+  const sem = semanaDoDia(sems, q.dia);
+  if (!sem.dias.some((d) => d.data === q.dia)) q.dia = (sem.dias.find((d) => d.data >= ymdL(agora)) || sem.dias[0]).data;
+  const iSem = sems.indexOf(sem);
+  const hoje = ymdL(agora);
+  const { atual, proxima } = aulaAgora(sems, agora);
+  const f = (d) => d.split('-').reverse().slice(0, 2).join('/');
+  const diaSel = sem.dias.find((d) => d.data === q.dia);
+
+  const blocoHtml = (b, dia) => {
+    if (!b.sigla) return `<div class="aula vaga"><span class="h">${b.ini}–${b.fim}</span><span>Sem aula</span></div>`;
+    if (ehIndisponivel(b.sigla)) return `<div class="aula vaga"><span class="h">${b.ini}–${b.fim}</span><span>Indisponível</span></div>`;
+    const lg = sem.legenda?.[siglaBase(b.sigla)] || {};
+    const agoraAqui = dia === hoje && b.ini <= hhmm(agora) && hhmm(agora) < b.fim;
+    const passou = dia < hoje || (dia === hoje && b.fim <= hhmm(agora));
+    return `<div class="aula${agoraAqui ? ' agora' : ''}${passou ? ' passou' : ''}" style="--cor:${corSigla(b.sigla)}">
+      <span class="h">${b.ini}<small>${b.fim}</small></span>
+      <div><div class="aula-t"><span class="sig">${esc(b.sigla)}</span>${agoraAqui ? '<span class="tag-agora">agora</span>' : ''}</div>
+        <b>${esc(capitaliza(lg.nome) || b.sigla)}</b>
+        <small>${[b.local && '📍 ' + esc(b.local), esc(capitaliza(lg.instrutor || b.instrutor)), `${b.qtd} aula${b.qtd > 1 ? 's' : ''}`].filter(Boolean).join(' · ')}</small>
+        ${b.adjuntos?.length ? `<small>Adj.: ${b.adjuntos.map((a) => esc(capitaliza(a))).join(', ')}</small>` : ''}</div></div>`;
+  };
+  const resumoDia = (d) => {
+    const bl = blocosDoDia(d.aulas).filter((b) => b.sigla);
+    if (!bl.length) return '<span class="cinza">Sem aula</span>';
+    if (bl.every((b) => ehIndisponivel(b.sigla))) return '<span class="cinza">Indisponível</span>';
+    return bl.filter((b) => !ehIndisponivel(b.sigla)).map((b) => `<span class="sig" style="--cor:${corSigla(b.sigla)}" title="${esc(b.ini)}–${esc(b.fim)}">${esc(b.sigla)}</span><small>${b.ini}</small>`).join('');
+  };
+  const contaSemana = {};
+  for (const d of sem.dias) for (const a of d.aulas) if (a.sigla && !ehIndisponivel(a.sigla)) contaSemana[siglaBase(a.sigla)] = (contaSemana[siglaBase(a.sigla)] || 0) + 1;
+  const discs = Object.entries(sem.legenda || {}).filter(([s, l]) => !ehIndisponivel(s) && l.ha?.total);
+
+  $('#v-qts').innerHTML = `<div class="secao" style="gap:14px">
+    <h2 class="titulo-vista">QTS</h2>
+    <div class="cal-cab"><button type="button" data-qtsnav="-1" aria-label="Semana anterior" ${iSem <= 0 ? 'disabled' : ''}>‹</button>
+      <h2>Semana ${esc(sem.semana)}<small>${f(sem.dias[0].data)} a ${f(sem.dias[sem.dias.length - 1].data)}</small></h2>
+      <button type="button" data-qtsnav="1" aria-label="Próxima semana" ${iSem >= sems.length - 1 ? 'disabled' : ''}>›</button></div>
+    <small class="cinza" style="text-align:center">${esc(sem.turma || '')}</small>
+    ${atual || proxima ? `<div class="aula-destaque">${atual ? `<div style="--cor:${corSigla(atual.sigla)}"><span class="lbl">Agora</span><b>${esc(capitaliza(nomeDisc(atual.semana, atual.sigla)) || atual.sigla)}</b><small>até ${atual.fim}${atual.local ? ' · ' + esc(atual.local) : ''} · faltam <span data-cd-fim="${atual.fimMs}">${contagem(atual.fimMs - agora)}</span></small></div>` : ''}
+      ${proxima ? `<div style="--cor:${corSigla(proxima.sigla)}"><span class="lbl">${atual ? 'Depois' : 'Próxima aula'}</span><b>${esc(capitaliza(nomeDisc(proxima.semana, proxima.sigla)) || proxima.sigla)}</b><small>${esc(rotuloQuando(proxima.data, proxima.ini, agora))}${proxima.local ? ' · ' + esc(proxima.local) : ''}</small></div>` : ''}</div>` : ''}
+    <div class="linha">${chip({ rotulo: 'Dia', ativo: q.modo === 'dia', dados: 'data-qtsmodo="dia"', peq: true })}${chip({ rotulo: 'Semana', ativo: q.modo === 'semana', dados: 'data-qtsmodo="semana"', peq: true })}${chip({ rotulo: 'Disciplinas', ativo: q.modo === 'disc', dados: 'data-qtsmodo="disc"', peq: true })}
+      <button class="btn link dir" type="button" data-acao="importar-pdf">Importar QTS</button></div>
+    ${q.modo === 'dia' ? `
+      <div class="semana" role="group" aria-label="Escolher dia">${sem.dias.map((d) => `<button type="button" data-qtsdia="${d.data}" aria-pressed="${d.data === q.dia}">
+        <span>${d.data === hoje ? 'HOJE' : DIAS_CURTOS[d.dow].toUpperCase()}</span><b class="num">${+d.data.slice(8)}</b>
+        <i class="pt" style="${d.aulas.some((a) => a.sigla && !ehIndisponivel(a.sigla)) ? '' : 'visibility:hidden'}"></i></button>`).join('')}</div>
+      <div class="secao"><h2 class="lbl">${esc(rotuloDia(new Date(q.dia + 'T12:00').getTime(), agora))} · ${f(q.dia)}</h2>
+        ${blocosDoDia(diaSel.aulas).map((b, i, arr) => (i && arr[i - 1].fim <= '12:00' && b.ini >= '13:00' ? '<div class="almoco">Almoço</div>' : '') + blocoHtml(b, q.dia)).join('')}</div>`
+    : q.modo === 'semana' ? `
+      <div class="qts-semana">${sem.dias.map((d) => `<button type="button" class="qts-dia${d.data === hoje ? ' hoje' : ''}" data-qtsdia="${d.data}" data-qtsir="dia">
+        <span class="d"><b>${DIAS_CURTOS[d.dow]}</b><small>${f(d.data)}</small></span><span class="r">${resumoDia(d)}</span></button>`).join('')}</div>`
+    : `
+      <div class="secao">${discs.length ? discs.map(([s, l]) => {
+        const pct = Math.min(100, Math.round((l.ha.dadas / l.ha.total) * 100));
+        return `<div class="disc-qts" style="--cor:${corSigla(s)}"><div class="disc-cab"><span class="sig">${esc(s)}</span><b>${esc(capitaliza(l.nome))}</b></div>
+          <small>${esc(capitaliza(l.instrutor))}${l.adjuntos?.length ? ' · Adj.: ' + l.adjuntos.map((a) => esc(capitaliza(a))).join(', ') : ''}</small>
+          <div class="barra-ha" role="img" aria-label="${l.ha.dadas} de ${l.ha.total} horas-aula"><i style="width:${pct}%"></i></div>
+          <small><b>${l.ha.dadas}/${l.ha.total}</b> H.A. (${pct}%)${pct >= 100 ? ' · concluída' : ` · faltam ${l.ha.total - l.ha.dadas}`}${contaSemana[s] ? ` · ${contaSemana[s]} nesta semana` : ''}</small></div>`;
+      }).join('') : '<div class="vazio">A legenda deste QTS não trouxe a carga horária.</div>'}
+      <p class="dica">H.A. = horas-aula dadas / previstas, como está na legenda do QTS.</p></div>`}
+  </div>`;
+}
+
 /** Revista matinal no painel: aparece nos dias de revista, até 12h, enquanto não estiver pronta. */
 function cartaoRevista(agora) {
   const cfg = store.get().config;
@@ -264,6 +357,7 @@ function renderPainel(agora) {
   const servicos = emServicoAgora(agora);
   $('#v-painel').innerHTML = `<div class="secao" style="gap:18px">
     ${servicos.map((i) => cartaoEmServico(i, agora)).join('')}
+    ${cartaoAula(agora)}
     ${cartaoRevista(agora)}
     ${avisos.join('')}
     <div class="resumo">
@@ -756,7 +850,7 @@ function renderTurma() {
     <div class="secao"><h2 class="lbl">Escalas da turma</h2>
       ${escalante ? '<button class="btn ouro" type="button" data-acao="publicar-escala">Publicar escala (PDF) para a turma</button>' : ''}
       ${T.escalas.length ? T.escalas.map((e) => `<div class="cartao-n"><h3>${esc(e.titulo)}</h3>
-        <span class="meta">${{ interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação' }[e.tipo] || 'Escala'} · ${e.linhas?.length || 0} linhas · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
+        <span class="meta">${{ interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação', qts: 'QTS' }[e.tipo] || 'Escala'} · ${e.linhas?.length || 0} linhas · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
         <div class="linha"><button class="btn pri" type="button" data-escala="${esc(e.id)}">Ver meus serviços</button>${admin || e.publicadoPor === ui.conta.email ? `<button class="btn link dir" type="button" data-escala-rm="${esc(e.id)}">Apagar</button>` : ''}</div></div>`).join('')
         : `<div class="vazio">Nenhuma escala publicada.${escalante ? '' : ' Enquanto isso, importe o PDF pelo botão dourado.'}</div>`}
     </div>
@@ -774,6 +868,7 @@ function renderizar() {
   $$('.abas button').forEach((b) => (b.dataset.ir === ui.vista ? b.setAttribute('aria-current', 'page') : b.removeAttribute('aria-current')));
   if (ui.vista === 'painel') renderPainel(agora);
   if (ui.vista === 'escalas') renderEscalas(agora);
+  if (ui.vista === 'qts') renderQts(agora);
   if (ui.vista === 'missoes') renderMissoes(agora);
   if (ui.vista === 'turma') renderTurma();
   if (ui.vista === 'ajustes') renderAjustes();
@@ -1171,6 +1266,7 @@ async function abrirEscalaPublicada(id) {
   const e = ui.turma.escalas.find((x) => x.id === id);
   if (!e) return;
   ui.imp = { etapa: 'resultado', modo: 'importar', tipo: e.tipo, linhas: e.linhas || [], nomeArquivo: e.titulo, origem: 'turma' };
+  if (e.tipo === 'qts' && e.linhas?.[0]?.dias) { ui.imp.qts = e.linhas[0]; desenharImportar(); abrirFolha('#dlg-importar'); return; }
   if (!['interna', 'rotina'].includes(e.tipo)) {
     EXT ||= await import('./escalasExtras.js');
     ui.imp.doc = { tipo: e.tipo, titulo: e.titulo, linhas: e.linhas || [] };
@@ -1197,7 +1293,7 @@ function desenharImportar() {
       <div class="campo"><label class="lbl" for="im-ncompleto">Seu nome completo</label><input id="im-ncompleto" value="${esc(cfg.nomeCompleto || '')}" placeholder="Como está no Serviço Interno"></div>
       <div class="campo"><label class="lbl" for="im-nguerra">Nome de guerra</label><input id="im-nguerra" value="${esc(cfg.nomeGuerra || '')}" placeholder="Como está na Rotina"></div></div>`;
   if (imp.etapa === 'inicio') {
-    corpo.innerHTML = `<p class="dica">Escolha o PDF: <b>Serviço Interno</b>, <b>Rotina</b>, <b>Desfile</b>, <b>Representação</b>, <b>Comando</b>, <b>Suplência</b>${imp.modo === 'publicar' ? '' : ', <b>Planilha de Anotados</b> ou <b>NAMCE</b>'}. O arquivo é lido aqui no aparelho${imp.modo === 'publicar' ? ' e a escala inteira fica disponível para a turma' : ' e nada é enviado'}.</p>
+    corpo.innerHTML = `<p class="dica">Escolha o PDF: <b>QTS</b>, <b>Serviço Interno</b>, <b>Rotina</b>, <b>Desfile</b>, <b>Representação</b>, <b>Comando</b>, <b>Suplência</b>${imp.modo === 'publicar' ? '' : ', <b>Planilha de Anotados</b> ou <b>NAMCE</b>'}. O arquivo é lido aqui no aparelho${imp.modo === 'publicar' ? ' e a escala inteira fica disponível para a turma' : ' e nada é enviado'}.</p>
       ${imp.modo === 'importar' ? nomes : ''}
       <label class="btn pri" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher PDF</label>`;
     return;
@@ -1207,6 +1303,7 @@ function desenharImportar() {
     corpo.innerHTML = `<p class="erro">${esc(imp.erro)}</p><label class="btn" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher outro PDF</label>`;
     return;
   }
+  if (imp.qts) return desenharQtsImport(imp, corpo);
   if (imp.doc) return desenharDocumento(imp, cfg, corpo, nomes);
   // resultado
   const titulo = tituloEscala(imp);
@@ -1234,6 +1331,25 @@ function desenharImportar() {
         <button class="btn pri" type="button" data-imp="adicionar">Adicionar à agenda</button>`}
     ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}`;
 }
+function desenharQtsImport(imp, corpo) {
+  const q = imp.qts;
+  const aulas = q.dias.reduce((n, d) => n + d.aulas.filter((a) => a.sigla && !ehIndisponivel(a.sigla)).length, 0);
+  const discs = new Set(q.dias.flatMap((d) => d.aulas.filter((a) => a.sigla && !ehIndisponivel(a.sigla)).map((a) => siglaBase(a.sigla))));
+  const ja = (store.get().config.qts || []).some((s) => s.id === q.id);
+  const podePublicar = imp.origem === 'pdf' && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante');
+  if (imp.modo === 'publicar') {
+    corpo.innerHTML = `<div class="previa"><b>${esc(q.titulo)}</b><span>${esc(q.turma)}</span></div>
+      <div class="campo"><label class="lbl" for="im-titulo">Título para a turma</label><input id="im-titulo" value="${esc(q.titulo)}"></div>
+      <div class="linha"><button class="btn pri" type="button" data-imp="publicar">Publicar</button><label class="btn" for="arquivo-pdf" style="cursor:pointer">Outro PDF</label></div>`;
+    return;
+  }
+  corpo.innerHTML = `<div class="previa"><b>${esc(q.titulo)}</b><span>${esc(q.turma)} · ${aulas} aulas de ${discs.size} disciplinas${imp.origem === 'turma' ? ' · publicado na turma' : ''}</span></div>
+    <div class="imp-lista">${q.dias.map((d) => { const bl = blocosDoDia(d.aulas).filter((b) => b.sigla && !ehIndisponivel(b.sigla));
+      return `<div class="imp-item anot"><span><b>${DIAS_CURTOS[d.dow]} ${d.data.split('-').reverse().slice(0, 2).join('/')}</b> ${bl.length ? bl.map((b) => `${esc(b.sigla)} ${b.ini}`).join(' · ') : '<span class="cinza">sem aula</span>'}</span></div>`; }).join('')}</div>
+    <button class="btn pri" type="button" data-imp="salvar-qts">${ja ? 'Atualizar esta semana no QTS' : 'Salvar no QTS'}</button>
+    ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar este QTS para a turma</button>' : ''}`;
+}
+
 /** Desfile, Representação, Comando, Suplência, Planilha de Anotados e NAMCE. */
 function desenharDocumento(imp, cfg, corpo, nomes) {
   const doc = imp.doc, E = EXT;
@@ -1287,6 +1403,13 @@ async function lerPdfEscolhido(arquivo) {
   try {
     const pdf = await import('./escalaPdf.js');
     const itens = await pdf.extrairItens(arquivo);
+    if (ehQts(itens)) {
+      const qts = lerQts(itens);
+      if (!qts.dias.length) throw new Error('Não encontrei as páginas dos dias neste QTS.');
+      Object.assign(ui.imp, { etapa: 'resultado', tipo: 'qts', qts, linhas: [qts], origem: 'pdf' });
+      desenharImportar();
+      return;
+    }
     EXT ||= await import('./escalasExtras.js');
     const extra = EXT.detectarTipoExtra(itens);
     if (extra) {
@@ -1297,7 +1420,7 @@ async function lerPdfEscolhido(arquivo) {
       return;
     }
     const tipo = pdf.detectarTipo(itens);
-    if (!tipo) throw new Error('Não reconheci este PDF. O app lê: Serviço Interno, Rotina, Desfile, Representação, Comando, Suplência, Planilha de Anotados e NAMCE.');
+    if (!tipo) throw new Error('Não reconheci este PDF. O app lê: QTS, Serviço Interno, Rotina, Desfile, Representação, Comando, Suplência, Planilha de Anotados e NAMCE.');
     const linhas = tipo === 'interna' ? pdf.lerEscalaInterna(itens) : pdf.lerEscalaRotina(itens, new Date());
     if (!linhas.length) throw new Error('Não encontrei a tabela da escala neste PDF.');
     Object.assign(ui.imp, { etapa: 'resultado', tipo, linhas, origem: 'pdf' });
@@ -1342,11 +1465,17 @@ $('#importar-corpo').addEventListener('click', async (e) => {
     vibrar(25);
     toast(novas === sel.length ? `${novas} serviço${novas > 1 ? 's' : ''} na agenda` : `${novas} novo${novas === 1 ? '' : 's'}, ${sel.length - novas} atualizado${sel.length - novas === 1 ? '' : 's'}`);
   }
+  if (b.dataset.imp === 'salvar-qts') {
+    store.setConfig({ qts: guardarSemana(store.get().config.qts, imp.qts) });
+    fecharFolha('#dlg-importar'); vibrar(25);
+    ui.qts = { dia: ymdL(Math.max(Date.now(), new Date(imp.qts.dias[0].data + 'T00:00').getTime())), modo: 'dia' };
+    ui.vista = 'qts'; renderizar(); toast(`QTS da semana ${imp.qts.semana} salvo`);
+  }
   if (b.dataset.imp === 'ir-publicar') { imp.modo = 'publicar'; desenharImportar(); }
   if (b.dataset.imp === 'publicar') {
     b.disabled = true;
     try {
-      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || (imp.doc ? imp.doc.titulo : tituloEscala(imp)), linhas: imp.linhas });
+      await nuvem.publicarEscala({ tipo: imp.tipo, titulo: $('#im-titulo').value.trim() || (imp.qts ? imp.qts.titulo : imp.doc ? imp.doc.titulo : tituloEscala(imp)), linhas: imp.linhas });
       fecharFolha('#dlg-importar'); toast('Escala publicada para a turma');
       ui.turma.carregado = false; carregarTurma();
     } catch (err) { b.disabled = false; toast(mensagemErro(err)); }
@@ -1512,6 +1641,10 @@ document.addEventListener('click', async (e) => {
   if (ck) { const [id, i] = ck.dataset.ck.split(':'); store.marcarChecklist(id, +i); vibrar(10); return; }
   const tr = t.closest('[data-troca]'); if (tr) { tr.disabled = true; return acaoTroca(tr.dataset.troca, tr.dataset.id); }
   const escB = t.closest('[data-escala]'); if (escB) return abrirEscalaPublicada(escB.dataset.escala);
+  const qn = t.closest('[data-qtsnav]');
+  if (qn) { const sems = store.get().config.qts || []; const i = sems.indexOf(semanaDoDia(sems, ui.qts.dia)) + +qn.dataset.qtsnav; if (sems[i]) ui.qts.dia = sems[i].dias[0].data; renderizar(); return; }
+  const qm = t.closest('[data-qtsmodo]'); if (qm) { ui.qts.modo = qm.dataset.qtsmodo; renderizar(); return; }
+  const qd = t.closest('[data-qtsdia]'); if (qd) { ui.qts.dia = qd.dataset.qtsdia; if (qd.dataset.qtsir) ui.qts.modo = 'dia'; renderizar(); return; }
   if (t.closest('[data-ir-rotina]')) { ui.vista = 'missoes'; ui.mis.status = 'rotina'; renderizar(); return; }
   const rvrm = t.closest('[data-rvrm]');
   if (rvrm) { const r = configRevista(store.get().config); const itens = r.itens.filter((_, i) => i !== +rvrm.dataset.rvrm); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens } }); return; }
@@ -1793,7 +1926,7 @@ navigator.serviceWorker?.addEventListener('message', (e) => {
 
 // atalho do ícone (ex.: ./#escalas) abre direto na aba
 const hashInicial = location.hash.replace('#', '');
-if (['painel', 'escalas', 'missoes', 'turma', 'ajustes'].includes(hashInicial)) ui.vista = hashInicial;
+if (['painel', 'escalas', 'qts', 'missoes', 'turma', 'ajustes'].includes(hashInicial)) ui.vista = hashInicial;
 // aviso tocado com o app fechado: ./#abrir=<chave>
 const abrirAoIniciar = hashInicial.startsWith('abrir=') ? decodeURIComponent(hashInicial.slice(6)) : '';
 

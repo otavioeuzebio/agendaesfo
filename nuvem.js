@@ -16,7 +16,7 @@ import { carregar, confirmarSenha } from './acesso.js';
 import { store } from './store.js';
 import { chaveDaConta, guardarChaveDaSenha, cifrar, decifrar, novoPar, guardarPar, lerPar, chaveComum } from './cripto.js';
 
-export const VERSAO_APP = '2.3.0';
+export const VERSAO_APP = '2.4.0';
 let conta = null; // { uid, email, admin, papel }
 const ouvintes = new Set();
 const status = { cofre: 'desligado', ultimaSinc: 0, erro: '', push: 'desligado' };
