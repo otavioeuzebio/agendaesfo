@@ -21,8 +21,9 @@ test('estágio CPU 06h→18h e rotinas', () => {
   const c = horarioPadrao('estagio_cpu', sab);
   assert.deepEqual([new Date(c.inicio).getHours(), new Date(c.fim).getHours()], [6, 18]);
   const l = horarioPadrao('lavanderia', qua);
-  assert.equal(l.diaTodo, true);
+  assert.equal(l.diaTodo, false);
   assert.equal(new Date(l.inicio).getDate(), 29, 'lavanderia é no dia seguinte');
+  assert.deepEqual([new Date(l.inicio).getHours(), new Date(l.inicio).getMinutes()], [6, 20], 'pronta para revista às 06h20');
   assert.equal(new Date(horarioPadrao('cafe_instrutores', qua).inicio).getMinutes(), 45);
 });
 
@@ -70,4 +71,37 @@ test('médias: ponderada e nota necessária', () => {
 test('checklist padrão existe para os serviços', () => {
   for (const s of ['sentinela_guarda', 'estagio_cpu', 'prova', 'copa', 'sobreaviso']) assert.ok(checklistPadrao(s).length >= 3, s);
   assert.deepEqual(checklistPadrao('pessoal'), []);
+});
+
+test('aviso da véspera e checklist de material dos serviços armados', async () => {
+  const { avisoVespera, CK_MATERIAL } = await import('../extras.js');
+  for (const s of ['sentinela_guarda', 'cmt_guarda', 'estagio_cpu']) {
+    const ck = checklistPadrao(s).map((c) => c.t);
+    for (const item of CK_MATERIAL) assert.ok(ck.includes(item), `${s}: ${item}`);
+  }
+  const it = { subtipo: 'sentinela_guarda', titulo: 'Sentinela da Guarda', inicio: new Date(2026, 9, 31, 7).getTime(), escala: { fardamento: '4º A' }, checklist: [] };
+  assert.equal(avisoVespera(it, new Date(2026, 9, 30, 7).getTime()).titulo, 'Amanhã: guarda 07h. Separou o 4º A?');
+  assert.match(avisoVespera({ ...it, escala: {} }, new Date(2026, 9, 30, 7).getTime(), '3º B').titulo, /Separou o 3º B\?/);
+});
+
+test('quadro de horários do posto atravessa a meia-noite', async () => {
+  const { quadroDoPosto } = await import('../extras.js');
+  const ini = new Date(2026, 9, 28, 19).getTime();
+  const q = quadroDoPosto('19h-21h, 01h-03h', ini, ini + 12 * H);
+  assert.equal(q.length, 2);
+  assert.equal(new Date(q[1].ini).getDate(), 29);
+  assert.equal((q[1].fim - q[1].ini) / H, 2);
+});
+
+test('média geral só com matérias finalizadas e equilíbrio da escala', async () => {
+  const { mediaGeral } = await import('../extras.js');
+  const m = (id, disc, nota, peso = 1) => ({ id, subtipo: 'prova', titulo: 'P', inicio: id, disciplina: disc, nota, peso });
+  const g = mediaGeral(mediasAcademicas([m(1, 'A', 8), m(2, 'A', 6, 3), m(3, 'B', 10), m(4, 'C', 9), m(5, 'C', null)]));
+  assert.equal(g.finalizadas, 2);
+  assert.equal(g.media, (6.5 + 10) / 2);
+  const agora = new Date(2026, 10, 10).getTime();
+  const s = (dia, h) => { const i = new Date(2026, 9, dia, 19).getTime(); return { subtipo: 'sentinela_guarda', inicio: i, fim: i + h * H, status: 'pendente' }; };
+  const r = relatorioHoras([s(1, 12), s(2, 12), s(6, 12)], agora);
+  assert.equal(r.equilibrio.seguidos, 1);
+  assert.equal(r.equilibrio.menorFolga, 12);
 });
