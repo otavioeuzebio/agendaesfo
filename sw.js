@@ -8,7 +8,7 @@
  *
  * Ao publicar uma nova versão, altere VERSAO para forçar a atualização.
  */
-const VERSAO = 'agenda-cadete-v2.2.0';
+const VERSAO = 'agenda-cadete-v2.3.0';
 const ARQUIVOS = [
   './',
   './index.html',
@@ -31,6 +31,7 @@ const ARQUIVOS = [
   './gcal.js',
   './escalaPdf.js',
   './escalasExtras.js',
+  './rotina.js',
   './brasao-apmg.png',
   './brasao-esfo.png',
   './formacao.jpg',
@@ -48,7 +49,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO).map((n) => caches.delete(n))))
+      .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO && n !== 'compartilhado').map((n) => caches.delete(n))))
       .then(() => self.clients.claim()),
   );
 });
@@ -58,6 +59,21 @@ const BIBLIOTECAS = ['https://www.gstatic.com', 'https://cdn.jsdelivr.net'];
 
 self.addEventListener('fetch', (e) => {
   const req = e.request;
+  // PDF recebido pelo "Compartilhar" do celular (Web Share Target)
+  if (req.method === 'POST' && new URL(req.url).pathname.endsWith('/compartilhar')) {
+    e.respondWith((async () => {
+      try {
+        const dados = await req.formData();
+        const arq = dados.getAll('pdf').find((f) => f && f.size);
+        if (arq) {
+          const cache = await caches.open('compartilhado');
+          await cache.put('./__compartilhado.pdf', new Response(arq, { headers: { 'Content-Type': 'application/pdf', 'X-Nome': encodeURIComponent(arq.name || 'escala.pdf') } }));
+        }
+      } catch (err) { /* abre o app mesmo assim */ }
+      return Response.redirect('./?compartilhado=1', 303);
+    })());
+    return;
+  }
   if (req.method !== 'GET') return;
   const origem = new URL(req.url).origin;
   if (BIBLIOTECAS.includes(origem)) {

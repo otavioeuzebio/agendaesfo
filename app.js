@@ -17,6 +17,7 @@ import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
 import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
+import { configRevista, diaDeRevista, revistaDoDia, situacaoAlimento, ROTULO_ALIMENTO, alimentosEmAlerta, lembretesExtras, relatoriosACriar, PRAZO_RELATORIO_PADRAO, ymd as ymdR } from './rotina.js';
 import { gcalConfigurado, sincronizarAgenda, desconectar as gcalDesconectar } from './gcal.js';
 import { gerarICS, baixar } from './ics.js';
 import { MODELOS, UNIDADES_CPU, crpmDa, horarioPadrao, proximoFimDeSemana, GRUPOS_SOBREAVISO, POSICOES_SALAS } from './modelos.js';
@@ -176,6 +177,20 @@ function cartaoEmServico(it, agora) {
   </div>`;
 }
 
+/** Revista matinal no painel: aparece nos dias de revista, até 12h, enquanto não estiver pronta. */
+function cartaoRevista(agora) {
+  const cfg = store.get().config;
+  const h = new Date(agora).getHours();
+  if (!diaDeRevista(cfg, agora) || h >= 12 || !mesmoDia(ui.diaPainel, inicioDoDia(agora))) return '';
+  const r = revistaDoDia(cfg, agora);
+  if (r.feita) return '';
+  return `<div class="revista" role="region" aria-label="Revista matinal">
+    <div class="rev-cab"><span class="lbl">Revista matinal · ${configRevista(cfg).hora}</span><small>${r.ok.length}/${r.itens.length}</small></div>
+    <div class="checklist">${r.itens.map((t, i) => `<label class="ck${r.ok.includes(i) ? ' ok' : ''}"><input type="checkbox" data-rev="${i}" ${r.ok.includes(i) ? 'checked' : ''}><span>${esc(t)}</span><span></span></label>`).join('')}</div>
+    <button class="btn ouro" type="button" data-acao="revista-pronta">Alojamento pronto para a revista</button>
+  </div>`;
+}
+
 /* ============ 3. vistas ============ */
 function renderTopo(agora) {
   const { config } = store.get();
@@ -229,6 +244,9 @@ function renderPainel(agora) {
   if (nAviso) avisos.push(`<div class="aviso mural-topo"><p><b>Aviso:</b> ${esc(nAviso.titulo)}</p><button class="btn" type="button" data-ir="turma">Ver mural</button></div>`);
   const recebidas = ui.turma.trocas.filter((t) => !t.enviada && t.status === 'pendente').length;
   if (recebidas) avisos.push(`<div class="aviso"><p>${recebidas === 1 ? 'Um colega pediu' : recebidas + ' pedidos de'} troca de serviço para você.</p><button class="btn pri" type="button" data-ir="turma">Responder</button></div>`);
+  const cfgP = store.get().config;
+  const alertaGel = alimentosEmAlerta(cfgP, agora);
+  if (alertaGel.length) avisos.push(`<div class="aviso gel"><p><b>Geladeira:</b> ${alertaGel.slice(0, 3).map((a) => `${esc(a.item)} · ${ROTULO_ALIMENTO[a.estado].toLowerCase()}`).join('; ')}${alertaGel.length > 3 ? '…' : ''}</p><button class="btn" type="button" data-ir-rotina>Ver geladeira</button></div>`);
   if (store.falhouGravar()) avisos.push(`<div class="aviso" style="border-color:var(--danger)"><p>O navegador recusou salvar os dados. Libere espaço ou saia da navegação anônima e faça um backup em Ajustes.</p></div>`);
 
   // linha do tempo
@@ -246,6 +264,7 @@ function renderPainel(agora) {
   const servicos = emServicoAgora(agora);
   $('#v-painel').innerHTML = `<div class="secao" style="gap:18px">
     ${servicos.map((i) => cartaoEmServico(i, agora)).join('')}
+    ${cartaoRevista(agora)}
     ${avisos.join('')}
     <div class="resumo">
       <div><b class="num">${pend.length}</b><span>pendentes ${mesmoDia(dia, hoje) ? 'hoje' : esc(rotuloDia(dia.getTime(), agora).toLowerCase())}</span></div>
@@ -325,6 +344,7 @@ const chipsMissoes = (f) => `<div class="chips">
       ${chip({ rotulo: 'Concluídas', ativo: f.status === 'concluida', dados: 'data-mstatus="concluida"' })}
       ${chip({ rotulo: 'Horas', ativo: f.status === 'horas', dados: 'data-mstatus="horas"' })}
       ${chip({ rotulo: 'Notas', ativo: f.status === 'notas', dados: 'data-mstatus="notas"' })}
+      ${chip({ rotulo: 'Rotina', ativo: f.status === 'rotina', dados: 'data-mstatus="rotina"' })}
     </div>`;
 
 function renderHoras(agora) {
@@ -411,6 +431,54 @@ function renderNotas() {
   </div>`;
 }
 
+/** Rotina do alojamento: revista matinal, geladeira e prazo do relatório de estágio. */
+function renderRotina(agora) {
+  const cfg = store.get().config;
+  const r = configRevista(cfg);
+  const gel = [...(cfg.geladeira || [])].map((a) => ({ ...a, ...situacaoAlimento(a.validade, agora) })).sort((a, b) => a.dias - b.dias);
+  const cor = { vencido: 'var(--danger)', hoje: 'var(--danger)', amanha: 'var(--p-importante)', logo: 'var(--p-importante)', ok: 'var(--ok)' };
+  const prazo = cfg.prazoRelatorioHoras ?? PRAZO_RELATORIO_PADRAO;
+  $('#v-missoes').innerHTML = `<div class="secao" style="gap:14px">
+    <h2 class="titulo-vista">Missões</h2>
+    ${chipsMissoes(ui.mis)}
+
+    <div class="ajuste"><h3>Revista matinal</h3>
+      <p>Checklist no painel nos dias de revista e um aviso no horário. Os itens vêm das AAD mais comuns nas planilhas.</p>
+      <label class="linha"><input type="checkbox" id="rv-ativo" ${r.ativo ? 'checked' : ''}> <span>Ligada</span></label>
+      <div class="dupla"><div class="campo"><label class="lbl" for="rv-hora">Horário do aviso</label><input id="rv-hora" type="time" value="${esc(r.hora)}"></div>
+        <div class="campo"><span class="lbl">Dias</span><div class="dias-rev">${DIAS_CURTOS.map((d, i) => `<label><input type="checkbox" data-rvdia="${i}" ${r.dias.includes(i) ? 'checked' : ''}><span>${d}</span></label>`).join('')}</div></div></div>
+      <div class="imp-lista">${r.itens.map((t, i) => `<div class="imp-item anot"><span>${esc(t)}</span><button class="btn link" type="button" data-rvrm="${i}" aria-label="Remover item">${svgLixo}</button></div>`).join('')}</div>
+      <div class="linha"><div class="campo" style="flex:1"><input id="rv-novo" placeholder="Novo item (ex.: coturno engraxado)"></div><button class="btn" type="button" data-acao="rv-add">Adicionar</button></div>
+      <div class="linha"><button class="btn pri" type="button" data-acao="rv-salvar">Salvar revista</button>${cfg.revista?.itens?.length ? '<button class="btn link dir" type="button" data-acao="rv-padrao">Voltar aos itens padrão</button>' : ''}</div>
+    </div>
+
+    <div class="ajuste"><h3>Geladeira</h3>
+      <p>Avisa na véspera e no dia do vencimento, e na quinta-feira (conferência da Copa) lista o que é seu.</p>
+      <div class="dupla"><div class="campo"><label class="lbl" for="gl-item">Alimento</label><input id="gl-item" placeholder="Ex.: iogurte"></div>
+        <div class="campo"><label class="lbl" for="gl-val">Validade</label><input id="gl-val" type="date" value="${ymdR(agora + 3 * DIA)}"></div></div>
+      <button class="btn pri" type="button" data-acao="gl-add">Guardar na lista</button>
+      ${gel.length ? `<div class="imp-lista">${gel.map((a) => `<div class="imp-item anot" style="border-left-color:${cor[a.estado]}"><span><b>${esc(a.item)}</b><small>${ddmm(new Date(a.validade + 'T12:00').getTime())} · <span style="color:${cor[a.estado]}">${ROTULO_ALIMENTO[a.estado]}${a.estado === 'logo' || a.estado === 'ok' ? ` (${a.dias} dias)` : ''}</span></small></span><button class="btn link" type="button" data-glrm="${esc(a.id)}" aria-label="Tirar da lista">${svgLixo}</button></div>`).join('')}</div>`
+        : '<div class="vazio">Nada na lista. Ao guardar algo na geladeira, anote aqui a validade.</div>'}
+    </div>
+
+    <div class="ajuste"><h3>Relatório do estágio CPU</h3>
+      <p>Depois de cada estágio, o app cria sozinho o prazo do relatório (redigir, assinar e entregar).</p>
+      <div class="linha"><div class="campo" style="width:120px"><label class="lbl" for="rl-horas">Prazo (horas)</label><input id="rl-horas" type="number" min="0" step="1" inputmode="numeric" value="${esc(prazo)}"></div>
+        <button class="btn pri" type="button" data-acao="rl-salvar" style="align-self:flex-end">Salvar prazo</button></div>
+      <p class="dica">Use 0 para desligar. Conta a partir do fim do estágio.</p>
+    </div>
+  </div>`;
+}
+
+/** Cria o prazo do relatório para estágios novos (uma vez por estágio). */
+function aplicarRelatorios() {
+  const cfg = store.get().config;
+  const novos = relatoriosACriar(store.get().missoes, cfg);
+  if (!novos.length) return;
+  store.salvarMissoes(novos);
+  store.setConfig({ relatoriosCriados: [...(cfg.relatoriosCriados || []), ...novos.map((m) => m.origemEstagio)].slice(-200) });
+}
+
 /** Histórico disciplinar (FO+, AAD e MCE) importado da Planilha de Anotados e da NAMCE. */
 function blocoDisciplina(config) {
   const regs = [...(config.disciplina || [])].sort((a, b) => (b.data || '').localeCompare(a.data || ''));
@@ -432,6 +500,7 @@ function renderMissoes(agora) {
   const f = ui.mis;
   if (f.status === 'horas') return renderHoras(agora);
   if (f.status === 'notas') return renderNotas();
+  if (f.status === 'rotina') return renderRotina(agora);
   let lista = f.status === 'pendente'
     ? itensNoIntervalo(agora - 30 * DIA, agora + 90 * DIA).filter((i) => i.status === 'pendente')
     : itensNoIntervalo(agora - 120 * DIA, agora + 365 * DIA).filter((i) => i.status === 'concluida').reverse();
@@ -1443,6 +1512,11 @@ document.addEventListener('click', async (e) => {
   if (ck) { const [id, i] = ck.dataset.ck.split(':'); store.marcarChecklist(id, +i); vibrar(10); return; }
   const tr = t.closest('[data-troca]'); if (tr) { tr.disabled = true; return acaoTroca(tr.dataset.troca, tr.dataset.id); }
   const escB = t.closest('[data-escala]'); if (escB) return abrirEscalaPublicada(escB.dataset.escala);
+  if (t.closest('[data-ir-rotina]')) { ui.vista = 'missoes'; ui.mis.status = 'rotina'; renderizar(); return; }
+  const rvrm = t.closest('[data-rvrm]');
+  if (rvrm) { const r = configRevista(store.get().config); const itens = r.itens.filter((_, i) => i !== +rvrm.dataset.rvrm); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens } }); return; }
+  const glrm = t.closest('[data-glrm]');
+  if (glrm) { store.setConfig({ geladeira: (store.get().config.geladeira || []).filter((a) => a.id !== glrm.dataset.glrm) }); toast('Tirado da lista'); return; }
   const discB = t.closest('[data-disc-rm]');
   if (discB) {
     const cfg = store.get().config;
@@ -1523,6 +1597,20 @@ document.addEventListener('click', async (e) => {
     case 'salvar-nome': store.setConfig({ nome: $('#aj-nome').value.trim() || 'Cadete' }); toast('Nome salvo'); break;
     case 'salvar-nomes': store.setConfig({ nomeCompleto: $('#aj-ncompleto').value.trim(), nomeGuerra: $('#aj-nguerra').value.trim(), fardamentoPadrao: $('#aj-fard').value.trim() }); toast('Salvo'); break;
     case 'importar-pdf': abrirImportar('importar'); break;
+    case 'revista-pronta': { const r = revistaDoDia(store.get().config, Date.now()); store.setConfig({ revistaHoje: { data: r.dia, ok: r.itens.map((_, i) => i), feita: true } }); vibrar(25); toast('Revista pronta. Bom dia!'); break; }
+    case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
+    case 'rv-padrao': { const { itens, ...resto } = store.get().config.revista || {}; store.setConfig({ revista: resto }); toast('Itens padrão restaurados'); break; }
+    case 'rv-salvar': {
+      const dias = $$('[data-rvdia]').filter((x) => x.checked).map((x) => +x.dataset.rvdia);
+      store.setConfig({ revista: { ...(store.get().config.revista || {}), ativo: $('#rv-ativo').checked, hora: $('#rv-hora').value || '06:00', dias } });
+      toast('Revista salva'); break;
+    }
+    case 'gl-add': {
+      const item = $('#gl-item').value.trim(), validade = $('#gl-val').value;
+      if (!item || !validade) { toast('Preencha o alimento e a validade'); break; }
+      store.setConfig({ geladeira: [...(store.get().config.geladeira || []), { id: novoId(), item, validade }] }); toast('Guardado na lista'); break;
+    }
+    case 'rl-salvar': { const v = Math.max(0, Math.round(+$('#rl-horas').value || 0)); store.setConfig({ prazoRelatorioHoras: v }); if (v) aplicarRelatorios(); toast(v ? `Prazo do relatório: ${v} h` : 'Prazo automático desligado'); break; }
     case 'publicar-escala': abrirImportar('publicar'); break;
     case 'add-contato': {
       const nome = $('#aj-ct-nome').value.trim(), tel = $('#aj-ct-tel').value.trim();
@@ -1618,6 +1706,12 @@ document.addEventListener('input', (e) => {
     const novo = $('#m-busca'); novo.focus(); try { novo.setSelectionRange(pos, pos); } catch (err) {}
   }
 });
+document.addEventListener('change', (e) => {
+  const rv = e.target.closest?.('[data-rev]'); if (!rv) return;
+  const r = revistaDoDia(store.get().config, Date.now());
+  const ok = new Set(r.ok); rv.checked ? ok.add(+rv.dataset.rev) : ok.delete(+rv.dataset.rev);
+  store.setConfig({ revistaHoje: { data: r.dia, ok: [...ok], feita: false } });
+});
 document.addEventListener('change', async (e) => {
   if (e.target.id !== 'aj-importar' || !e.target.files[0]) return;
   try { store.importar(await e.target.files[0].text()); toast('Backup restaurado'); }
@@ -1660,6 +1754,17 @@ async function verificarLembretes() {
     if (!mostrou && document.visibilityState === 'visible') toast(`${titulo}: ${it.titulo}`);
     store.marcarAvisado(chave);
   }
+  // revista, geladeira (não vêm de missões)
+  const { avisados } = store.get();
+  for (const x of lembretesExtras(store.get().config, agora - 6 * 3600000, agora)) {
+    if (avisados[x.tag]) continue;
+    let mostrou = false;
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) { await reg.showNotification(x.titulo, { body: x.corpo, tag: x.tag, icon: 'icon-192.png', badge: 'icon-192.png', data: { chave: x.chave }, silent: emServicoAgora(agora).length > 0 }); mostrou = true; } } catch (e) { /* aviso interno */ }
+    }
+    if (!mostrou && document.visibilityState === 'visible') toast(`${x.titulo}`);
+    store.marcarAvisado(x.tag);
+  }
 }
 
 let ultimoMinuto = -1;
@@ -1670,7 +1775,8 @@ function tique() {
   const minuto = Math.floor(agora / 60000);
   if (minuto !== ultimoMinuto) {
     ultimoMinuto = minuto;
-    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca') renderizar();
+    aplicarRelatorios();
+    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
     verificarLembretes();
   }
 }
@@ -1682,7 +1788,7 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', aplicarT
 
 // abre a missão quando o aviso é tocado (mensagem vinda do service worker)
 navigator.serviceWorker?.addEventListener('message', (e) => {
-  if (e.data?.tipo === 'abrir' && e.data.chave) { ui.vista = 'painel'; renderizar(); const k = e.data.chave; k.startsWith('ciclo:') ? abrirPlantao(k) : abrirMissao(k); }
+  if (e.data?.tipo === 'abrir' && e.data.chave) abrirChave(e.data.chave);
 });
 
 // atalho do ícone (ex.: ./#escalas) abre direto na aba
@@ -1690,6 +1796,14 @@ const hashInicial = location.hash.replace('#', '');
 if (['painel', 'escalas', 'missoes', 'turma', 'ajustes'].includes(hashInicial)) ui.vista = hashInicial;
 // aviso tocado com o app fechado: ./#abrir=<chave>
 const abrirAoIniciar = hashInicial.startsWith('abrir=') ? decodeURIComponent(hashInicial.slice(6)) : '';
+
+/** Abre o que o aviso indica: missão, plantão, revista (painel) ou geladeira (Rotina). */
+function abrirChave(k) {
+  if (k === 'revista') { ui.vista = 'painel'; ui.diaPainel = inicioDoDia(Date.now()); renderizar(); return; }
+  if (k === 'geladeira') { ui.vista = 'missoes'; ui.mis.status = 'rotina'; renderizar(); return; }
+  ui.vista = 'painel'; renderizar();
+  k.startsWith('ciclo:') ? abrirPlantao(k) : abrirMissao(k);
+}
 
 /** Próximos lembretes (7 dias) para o disparo com o app fechado. */
 function proximosLembretes() {
@@ -1703,6 +1817,7 @@ function proximosLembretes() {
       out.push({ dispara, titulo, corpo, chave: it.chave, tag: `${it.chave}@${min}`, critico: it.prioridade === 'critico' });
     }
   }
+  for (const x of lembretesExtras(store.get().config, agora + 60000, ate)) out.push(x);
   return out.sort((a, b) => a.dispara - b.dispara);
 }
 
@@ -1710,11 +1825,30 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Service worker não registrado', e)));
 }
 
+/** PDF enviado pelo "Compartilhar" do celular: o service worker guarda e o app abre a importação. */
+async function abrirPdfCompartilhado() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('compartilhado')) return;
+  history.replaceState(null, '', location.pathname + location.hash);
+  try {
+    const cache = await caches.open('compartilhado');
+    const res = await cache.match('./__compartilhado.pdf');
+    if (!res) return toast('Não recebi o PDF compartilhado. Tente de novo.');
+    const nome = decodeURIComponent(res.headers.get('X-Nome') || 'escala.pdf');
+    const arquivo = new File([await res.blob()], nome, { type: 'application/pdf' });
+    await cache.delete('./__compartilhado.pdf');
+    ui.imp = { modo: 'importar' }; abrirFolha('#dlg-importar');
+    lerPdfEscolhido(arquivo);
+  } catch (e) { console.error(e); toast('Não foi possível abrir o PDF compartilhado.'); }
+}
+
 /** Abre o app (depois do portão de acesso, quando ele está configurado). */
 async function iniciarApp(conta) {
   if (conta) { usarConta(conta.uid); ui.conta = { ...conta, papel: papelDaConta(conta.uid) }; }
   ui.iniciado = true;
   store.assinar(() => renderizar());
+  let tRel = null;
+  store.assinar(() => { clearTimeout(tRel); tRel = setTimeout(aplicarRelatorios, 400); });
   aplicarTema();
   $('#aba-turma').hidden = !temNuvem();
   renderizar();
@@ -1722,7 +1856,9 @@ async function iniciarApp(conta) {
   setInterval(tique, 1000);
   verificarLembretes();
   pedirArmazenamentoPersistente();
-  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); const it = acharItem(abrirAoIniciar); if (it) abrirAoIniciar.startsWith('ciclo:') ? abrirPlantao(abrirAoIniciar) : abrirMissao(abrirAoIniciar); }
+  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); if (['revista', 'geladeira'].includes(abrirAoIniciar) || acharItem(abrirAoIniciar)) abrirChave(abrirAoIniciar); }
+  aplicarRelatorios();
+  abrirPdfCompartilhado();
   if (temNuvem()) {
     await aguardarChave(); // a chave do cofre nasce da senha digitada no login
     nuvem.definirFonteLembretes(proximosLembretes);

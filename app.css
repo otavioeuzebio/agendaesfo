@@ -347,3 +347,15 @@ select { border: 1.5px solid var(--line); border-radius: 10px; padding: 10px; ba
 .regras-troca span::before { content: "✓ "; color: var(--ok); font-weight: 800; }
 .regras-troca span.nao::before { content: "✕ "; color: var(--danger); }
 .em-servico details.ck-serv summary { cursor: pointer; font-weight: 700; padding: 6px 0; }
+
+/* revista matinal e rotina */
+.revista { display: grid; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-left: 4px solid var(--gold); border-radius: 14px; padding: 12px 14px; }
+.revista .rev-cab { display: flex; justify-content: space-between; align-items: baseline; }
+.revista .rev-cab small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.dias-rev { display: flex; flex-wrap: wrap; gap: 4px; }
+.dias-rev label { display: inline-flex; position: relative; }
+.dias-rev input { position: absolute; opacity: 0; pointer-events: none; }
+.dias-rev span { padding: 6px 8px; border-radius: 8px; background: var(--surface-2); font-size: .82rem; cursor: pointer; }
+.dias-rev input:checked + span { background: var(--navy); color: var(--on-navy); }
+.dias-rev input:focus-visible + span { outline: 2px solid var(--gold); }
+.aviso.gel { border-color: var(--p-importante); }
