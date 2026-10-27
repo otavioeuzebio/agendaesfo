@@ -17,6 +17,7 @@ import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
 import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
+import { colegasNaEscala, livresParaTroca, casaColega, conflitos as conflitosAgenda, resumoFaltas, chaveAula, LIMITE_FALTAS_PADRAO, discDaSigla, opcoesDisciplina, textoResumo } from './cruzamentos.js';
 import { listarDocs, guardarDoc, apagarDoc, ehMeu, filtrar, agrupar as agruparLinhas, datasDoDoc, TIPOS_CONSULTA } from './documentos.js';
 import { ehQts, lerQts, blocosDoDia, aulaAgora, guardarSemana, semanaDoDia, siglaBase, ehIndisponivel } from './qts.js';
 import { configRevista, diaDeRevista, revistaDoDia, situacaoAlimento, ROTULO_ALIMENTO, alimentosEmAlerta, lembretesExtras, relatoriosACriar, PRAZO_RELATORIO_PADRAO, ymd as ymdR } from './rotina.js';
@@ -172,6 +173,7 @@ function cartaoEmServico(it, agora) {
       const st = agora >= q.fim ? 'feito' : agora >= q.ini ? 'agora' : '';
       return `<span class="q ${st}"><b>${hhmm(q.ini)}–${hhmm(q.fim)}</b>${st === 'agora' ? ' · no posto agora' : st === 'feito' ? ' · cumprido' : q === quadro.find((x) => agora < x.ini) ? ` · próximo em ${contagem(q.ini - agora)}` : ''}</span>`;
     }).join('')}</div>` : (it.origem === 'missao' ? '<small>Dica: em Detalhes, preencha "Seus horários no posto" (ex.: 19h-21h, 01h-03h) para ver o quadro aqui.</small>' : '')}
+    ${htmlColegas(ymdL(it.inicio), { compacto: true })}
     ${contatos.length ? `<div class="contatos">${contatos.map((c) => `<a href="tel:${esc(c.tel.replace(/[^\d+]/g, ''))}">📞 ${esc(c.nome)}</a>`).join('')}</div>` : '<small>Cadastre contatos úteis (Cmt. da Guarda, Oficial de Dia…) em Ajustes para ligar daqui.</small>'}
     <div class="linha"><button class="btn" type="button" data-abrir="${esc(it.chave)}">Detalhes</button><button class="btn ouro dir" type="button" data-check="${esc(it.chave)}">Encerrar serviço</button></div>
     ${m?.checklist?.length ? `<details class="ck-serv"${(ui.ckServAberto ?? (pendentesChecklist(m) > 0 && agora < it.inicio + 3600000)) ? ' open' : ''}><summary>Checklist · ${m.checklist.length - pendentesChecklist(m)}/${m.checklist.length} conferidos</summary><div class="checklist">${m.checklist.map((c, i) => linhaChecklist(m, i, c)).join('')}</div></details>` : ''}
@@ -248,10 +250,16 @@ function renderTodos(agora) {
 }
 
 /* ---- QTS (Quadro de Trabalho Semanal) ---- */
+function faltasDoBloco(dia, b) {
+  const f = store.get().config.faltas || {};
+  let n = 0; for (let i = b.primeira; i <= b.ultima; i++) if (f[chaveAula(dia, i)]) n++;
+  return n;
+}
 const corSigla = (s) => { let h = 0; for (const c of siglaBase(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return `hsl(${h} 55% 45%)`; };
 const ymdL = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const nomeDisc = (sem, sigla) => sem?.legenda?.[siglaBase(sigla)]?.nome || '';
-const capitaliza = (t) => String(t || '').toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase()).replace(/\b(Da|De|Do|Dos|Das|E)\b/g, (m) => m.toLowerCase());
+const capitaliza = (t) => String(t || '').toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase()).replace(/\b(Da|De|Do|Dos|Das|E)\b/g, (m) => m.toLowerCase())
+  .replace(/\b(Ii|Iii|Iv|Vi|Vii|Viii|Ix)\b/g, (m) => m.toUpperCase()).replace(/\b(\d+\S*)/g, (m) => m.toUpperCase());
 function rotuloQuando(dataYmd, hhmmTxt, agora) {
   const d = new Date(`${dataYmd}T${hhmmTxt}:00`).getTime();
   return `${rotuloDia(d, agora).toLowerCase()} às ${hhmmTxt}`;
@@ -296,7 +304,8 @@ function renderQts(agora) {
       <div><div class="aula-t"><span class="sig">${esc(b.sigla)}</span>${agoraAqui ? '<span class="tag-agora">agora</span>' : ''}</div>
         <b>${esc(capitaliza(lg.nome) || b.sigla)}</b>
         <small>${[b.local && '📍 ' + esc(b.local), esc(capitaliza(lg.instrutor || b.instrutor)), `${b.qtd} aula${b.qtd > 1 ? 's' : ''}`].filter(Boolean).join(' · ')}</small>
-        ${b.adjuntos?.length ? `<small>Adj.: ${b.adjuntos.map((a) => esc(capitaliza(a))).join(', ')}</small>` : ''}</div></div>`;
+        ${b.adjuntos?.length ? `<small>Adj.: ${b.adjuntos.map((a) => esc(capitaliza(a))).join(', ')}</small>` : ''}
+        ${passou || agoraAqui ? (() => { const nf = faltasDoBloco(dia, b); return `<button type="button" class="falta${nf ? ' on' : ''}" data-falta="${dia}|${b.primeira}|${b.ultima}|${esc(b.sigla)}">${nf ? `Faltei (${nf} aula${nf > 1 ? 's' : ''}) · desfazer` : 'Marcar falta'}</button>`; })() : ''}</div></div>`;
   };
   const resumoDia = (d) => {
     const bl = blocosDoDia(d.aulas).filter((b) => b.sigla);
@@ -307,6 +316,10 @@ function renderQts(agora) {
   const contaSemana = {};
   for (const d of sem.dias) for (const a of d.aulas) if (a.sigla && !ehIndisponivel(a.sigla)) contaSemana[siglaBase(a.sigla)] = (contaSemana[siglaBase(a.sigla)] || 0) + 1;
   const discs = Object.entries(sem.legenda || {}).filter(([s, l]) => !ehIndisponivel(s) && l.ha?.total);
+  const cfgQ = store.get().config;
+  const pctFaltas = +(cfgQ.limiteFaltasPct ?? LIMITE_FALTAS_PADRAO);
+  const faltas = resumoFaltas(sems, cfgQ.faltas, pctFaltas);
+  const medias = mediasAcademicas(store.get().missoes, +(cfgQ.mediaMinima ?? 7));
 
   $('#v-qts').innerHTML = `<div class="secao" style="gap:14px">
     <h2 class="titulo-vista">QTS</h2>
@@ -333,9 +346,15 @@ function renderQts(agora) {
         return `<div class="disc-qts" style="--cor:${corSigla(s)}"><div class="disc-cab"><span class="sig">${esc(s)}</span><b>${esc(capitaliza(l.nome))}</b></div>
           <small>${esc(capitaliza(l.instrutor))}${l.adjuntos?.length ? ' · Adj.: ' + l.adjuntos.map((a) => esc(capitaliza(a))).join(', ') : ''}</small>
           <div class="barra-ha" role="img" aria-label="${l.ha.dadas} de ${l.ha.total} horas-aula"><i style="width:${pct}%"></i></div>
-          <small><b>${l.ha.dadas}/${l.ha.total}</b> H.A. (${pct}%)${pct >= 100 ? ' · concluída' : ` · faltam ${l.ha.total - l.ha.dadas}`}${contaSemana[s] ? ` · ${contaSemana[s]} nesta semana` : ''}</small></div>`;
+          <small><b>${l.ha.dadas}/${l.ha.total}</b> H.A. (${pct}%)${pct >= 100 ? ' · concluída' : ` · faltam ${l.ha.total - l.ha.dadas}`}${contaSemana[s] ? ` · ${contaSemana[s]} nesta semana` : ''}</small>
+          ${(() => { const f = faltas[s] || { faltas: 0, permitidas: Math.floor((l.ha.total * pctFaltas) / 100) }; const risco = f.permitidas && f.faltas >= f.permitidas * 0.75;
+            return `<small class="${f.faltas > f.permitidas ? 'erro' : risco ? 'alerta' : ''}">Faltas: <b>${f.faltas}</b> de ${f.permitidas} permitidas${f.faltas > f.permitidas ? ' · passou do limite' : f.faltas === f.permitidas && f.faltas ? ' · no limite' : risco ? ' · perto do limite' : ''}</small>`; })()}
+          ${(() => { const d = medias.find((x) => discDaSigla(x.disciplina, s, l.nome)); if (!d) return '';
+            const prox = d.proxima ? `próxima: ${esc(d.proxima.titulo)} ${ddmm(d.proxima.inicio)}${d.precisa != null && d.situacao === 'em-aberto' ? ` · precisa de ${(Math.round(d.precisa * 10) / 10).toLocaleString('pt-BR')}` : ''}` : '';
+            return `<small>Média: <b>${d.media == null ? '–' : (Math.round(d.media * 100) / 100).toLocaleString('pt-BR')}</b>${prox ? ' · ' + prox : ''}</small>`; })()}</div>`;
       }).join('') : '<div class="vazio">A legenda deste QTS não trouxe a carga horária.</div>'}
-      <p class="dica">H.A. = horas-aula dadas / previstas, como está na legenda do QTS.</p></div>`}
+      <div class="linha"><label class="lbl" for="qts-pct">Limite de faltas (% das H.A.)</label><div class="campo" style="width:90px"><input id="qts-pct" type="number" min="0" max="100" step="1" inputmode="numeric" value="${esc(pctFaltas)}"></div></div>
+      <p class="dica">H.A. = horas-aula dadas / previstas, como está na legenda do QTS. Marque as faltas no dia (aba Dia). Provas lançadas com a disciplina do QTS (ex.: "DPM1 – Direito Penal Militar I") aparecem aqui com a média.</p></div>`}
   </div>`;
 }
 
@@ -407,6 +426,8 @@ function renderPainel(agora) {
   const recebidas = ui.turma.trocas.filter((t) => !t.enviada && t.status === 'pendente').length;
   if (recebidas) avisos.push(`<div class="aviso"><p>${recebidas === 1 ? 'Um colega pediu' : recebidas + ' pedidos de'} troca de serviço para você.</p><button class="btn pri" type="button" data-ir="turma">Responder</button></div>`);
   const cfgP = store.get().config;
+  const confl = conflitosAgenda(itensNoIntervalo(agora - DIA, agora + 15 * DIA).map((i) => ({ ...i, fim: fimEfetivo(i) })), cfgP.qts || [], agora);
+  if (confl.length) avisos.push(`<div class="aviso conflito"><p><b>Conflito${confl.length > 1 ? 's' : ''} na agenda</b></p>${confl.slice(0, 3).map((c) => `<button type="button" class="btn link" data-abrir="${esc(c.chaves[c.chaves.length - 1])}">${esc(rotuloDia(c.quando, agora))} ${hhmm(c.quando)} · ${esc(c.texto)}</button>`).join('')}${confl.length > 3 ? `<small>e mais ${confl.length - 3}</small>` : ''}</div>`);
   if (temNuvem() && ['sem-chave', 'chave-diferente'].includes(nuvem.statusNuvem().cofre))
     avisos.push(`<div class="aviso" style="border-color:var(--p-importante)"><p><b>Sincronização desligada neste aparelho.</b> O que você importa no PC ou no celular não passa para o outro até ligar.</p><button class="btn pri" type="button" data-ir="ajustes">Ligar agora</button></div>`);
   const alertaGel = alimentosEmAlerta(cfgP, agora);
@@ -617,6 +638,14 @@ function renderRotina(agora) {
       <div class="imp-lista">${r.itens.map((t, i) => `<div class="imp-item anot"><span>${esc(t)}</span><button class="btn link" type="button" data-rvrm="${i}" aria-label="Remover item">${svgLixo}</button></div>`).join('')}</div>
       <div class="linha"><div class="campo" style="flex:1"><input id="rv-novo" placeholder="Novo item (ex.: coturno engraxado)"></div><button class="btn" type="button" data-acao="rv-add">Adicionar</button></div>
       <div class="linha"><button class="btn pri" type="button" data-acao="rv-salvar">Salvar revista</button>${cfg.revista?.itens?.length ? '<button class="btn link dir" type="button" data-acao="rv-padrao">Voltar aos itens padrão</button>' : ''}</div>
+    </div>
+
+    <div class="ajuste"><h3>Resumo da noite</h3>
+      <p>Um aviso só com o dia seguinte: aulas do QTS, serviços e missões, revista, geladeira e o que falta separar no checklist.</p>
+      <div class="linha"><label class="linha"><input type="checkbox" id="rs-ativo" ${(cfg.resumo?.ativo ?? true) ? 'checked' : ''}> <span>Ligado</span></label>
+        <div class="campo" style="width:120px"><label class="lbl" for="rs-hora">Horário</label><input id="rs-hora" type="time" value="${esc(cfg.resumo?.hora || '21:00')}"></div>
+        <button class="btn pri" type="button" data-acao="rs-salvar" style="align-self:flex-end">Salvar</button></div>
+      ${(() => { const r = resumoDoDia(ymdR(agora + DIA)); return r ? `<p class="dica"><b>Prévia:</b> ${esc(r.titulo)} — ${esc(r.corpo)}</p>` : '<p class="dica">Prévia: nada para amanhã ainda.</p>'; })()}
     </div>
 
     <div class="ajuste"><h3>Geladeira</h3>
@@ -1123,7 +1152,7 @@ function abrirMissao(id, { rapido, dia, modelo } = {}) {
     horarioAuto: !m && !!horarioPadrao(base.subtipo, new Date(base.inicio)), unidade: base.escala?.unidade || '', tituloAuto: '', localAuto: '', detalhe: base.detalhe || '',
     checklist: m ? (m.checklist || []).map((c) => ({ ...c })) : checklistPadrao(base.subtipo), checkManual: !!m });
   $('#m-disc').value = m?.disciplina || ''; $('#m-peso').value = m?.peso ?? ''; $('#m-nota').value = m?.nota ?? ''; $('#m-check-novo').value = '';
-  $('#lista-disc').innerHTML = [...new Set(store.get().missoes.map((x) => x.disciplina).filter(Boolean))].sort().map((d) => `<option value="${esc(d)}">`).join('');
+  $('#lista-disc').innerHTML = [...new Set([...opcoesDisciplina(store.get().config.qts, capitaliza), ...store.get().missoes.map((x) => x.disciplina).filter(Boolean)])].sort().map((d) => `<option value="${esc(d)}">`).join('');
   $('#m-oficial').value = base.escala?.oficial || '';
   $('#m-titulo').value = base.titulo || '';
   $('#m-data').value = paraData(base.inicio); $('#m-hora').value = base.diaTodo ? '' : paraHora(base.inicio);
@@ -1135,9 +1164,26 @@ function abrirMissao(id, { rapido, dia, modelo } = {}) {
   $('#m-posto').value = base.escala?.posto || ''; $('#m-funcao').value = base.escala?.funcao || ''; $('#m-fard').value = base.escala?.fardamento || (base.escala && SERVICOS_ARMADOS.includes(base.subtipo) && !m ? store.get().config.fardamentoPadrao || '' : ''); $('#m-quartos').value = base.escala?.quartos || '';
   $('#t-com').value = ''; $('#t-motivo').value = ''; $('#t-status').value = 'solicitada';
   desenharTrocas(m);
+  desenharColegas(m);
   desenharFormMissao();
   abrirFolha('#dlg-missao');
   if (modelo) setTimeout(() => (modelo.subtipo === 'estagio_cpu' ? $('#m-unidades button') : modelo.titulo.endsWith(' ') || !modelo.titulo ? $('#m-titulo') : $('#m-data'))?.focus(), 80);
+}
+/** "Na escala com você": quem está no Serviço Interno do mesmo dia (da escala completa). */
+function htmlColegas(dia, { compacto = false } = {}) {
+  const g = colegasNaEscala(listarDocs(ui.conta?.uid), dia, store.get().config);
+  if (!g) return '';
+  if (compacto) {
+    const outros = g.flatMap((x) => x.nomes.filter((n) => !n.eu).map((n) => `${n.nome.split(' ')[0]} ${n.nome.split(' ').slice(-1)[0]} (${x.rotulo.split(' · ')[0]})`));
+    return outros.length ? `<small>Na escala hoje: ${esc(outros.slice(0, 6).join(', '))}${outros.length > 6 ? '…' : ''}</small>` : '';
+  }
+  return `<span class="lbl">Na escala com você · ${ddmm(new Date(dia + 'T12:00').getTime())}</span>
+    ${g.map((x) => `<div class="func${x.nomes.some((n) => n.eu) ? ' minha' : ''}"><span class="lbl">${esc(x.rotulo)}</span><div class="nomes">${x.nomes.map((n) => `<span class="${n.eu ? 'eu' : ''}">${esc([n.grad, n.nome].filter(Boolean).join(' '))}</span>`).join('')}</div></div>`).join('')}`;
+}
+function desenharColegas(m) {
+  const box = $('#m-colegas');
+  const html = m && SUBTIPOS_ESCALA.includes(m.subtipo) ? htmlColegas(ymdL(m.inicio)) : '';
+  box.hidden = !html; box.innerHTML = html;
 }
 function desenharTrocas(m) {
   $('#m-trocas-lista').innerHTML = (m?.trocas || []).map((t) => `<span>${ddmm(t.em)} ${hhmm(t.em)} · com <b>${esc(t.comQuem)}</b> · ${esc(t.status)}${t.motivo ? ' · ' + esc(t.motivo) : ''}</span>`).join('') || '<span>Nenhuma troca registrada.</span>';
@@ -1612,6 +1658,14 @@ function desenharTroca() {
     ${t.colegas == null ? '<p class="carregando">Buscando colegas…</p>'
       : t.colegas.length ? `<div class="chips">${t.colegas.map((c) => chip({ rotulo: 'Cad. ' + (c.nomeGuerra || c.nome), ativo: t.escolhido === c.email, dados: `data-colega="${esc(c.email)}"` })).join('')}</div>`
       : `<p class="erro">${esc(t.erro || 'Nenhum colega desta turma entrou no app ainda.')}</p>`}
+    ${(() => {
+      const livres = livresParaTroca(listarDocs(ui.conta?.uid), ymdL(t.it.inicio), store.get().config);
+      if (!livres) return '';
+      if (!livres.length) return '<p class="dica">Pela escala completa, ninguém da sua turma está livre na véspera, no dia e no dia seguinte.</p>';
+      return `<div class="caixa"><span class="lbl">Livres pela escala <small>sem serviço na véspera, no dia e no dia seguinte · menos escalados primeiro</small></span>
+        <div class="livres">${livres.slice(0, 12).map((x) => { const c = (t.colegas || []).find((cc) => casaColega(x.nome, cc));
+          return c ? `<button type="button" class="chip peq${t.escolhido === c.email ? ' sel' : ''}" data-colega="${esc(c.email)}">${esc(x.nome)} · ${x.servicos} serv. · no app</button>` : `<span class="chip peq off">${esc(x.nome)} · ${x.servicos} serv.</span>`; }).join('')}</div></div>`;
+    })()}
     <div class="campo"><label class="lbl" for="tr-fiscal">Fiscalizador a ser informado</label><input id="tr-fiscal" placeholder="Ex.: Ten. Silva" value="${esc(t.fiscal || '')}"></div>
     <div class="campo"><label class="lbl" for="tr-motivo">Motivo</label><input id="tr-motivo" placeholder="Ex.: consulta médica, viagem" value="${esc(t.motivo || '')}"></div>
     <div class="caixa"><span class="lbl">Regras da troca</span><div class="regras-troca">${regras.map((r) => `<span class="${r.ok ? '' : 'nao'}">${esc(r.txt)}</span>`).join('')}</div></div>
@@ -1724,6 +1778,14 @@ document.addEventListener('click', async (e) => {
   if (ck) { const [id, i] = ck.dataset.ck.split(':'); store.marcarChecklist(id, +i); vibrar(10); return; }
   const tr = t.closest('[data-troca]'); if (tr) { tr.disabled = true; return acaoTroca(tr.dataset.troca, tr.dataset.id); }
   const escB = t.closest('[data-escala]'); if (escB) return abrirEscalaPublicada(escB.dataset.escala);
+  const fb = t.closest('[data-falta]');
+  if (fb) {
+    const [dia, a, b, sigla] = fb.dataset.falta.split('|');
+    const f = { ...(store.get().config.faltas || {}) };
+    const tem = Array.from({ length: +b - +a + 1 }, (_, i) => chaveAula(dia, +a + i)).some((k) => f[k]);
+    for (let i = +a; i <= +b; i++) { const k = chaveAula(dia, i); if (tem) delete f[k]; else f[k] = sigla; }
+    store.setConfig({ faltas: f }); toast(tem ? 'Falta desmarcada' : `Falta marcada (${+b - +a + 1} aula${+b > +a ? 's' : ''})`); return;
+  }
   const tdd = t.closest('[data-todosdata]'); if (tdd) { ui.todos.data = tdd.dataset.todosdata; renderizar(); return; }
   const qn = t.closest('[data-qtsnav]');
   if (qn) { const sems = store.get().config.qts || []; const i = sems.indexOf(semanaDoDia(sems, ui.qts.dia)) + +qn.dataset.qtsnav; if (sems[i]) ui.qts.dia = sems[i].dias[0].data; renderizar(); return; }
@@ -1819,6 +1881,7 @@ document.addEventListener('click', async (e) => {
     case 'td-eu': ui.todos.busca = store.get().config.nomeGuerra || store.get().config.nomeCompleto || ''; renderizar(); break;
     case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); if (temNuvem()) nuvem.agendarSincronizacao(); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
     case 'revista-pronta': { const r = revistaDoDia(store.get().config, Date.now()); store.setConfig({ revistaHoje: { data: r.dia, ok: r.itens.map((_, i) => i), feita: true } }); vibrar(25); toast('Revista pronta. Bom dia!'); break; }
+    case 'rs-salvar': store.setConfig({ resumo: { ativo: $('#rs-ativo').checked, hora: $('#rs-hora').value || '21:00' } }); toast('Resumo da noite salvo'); break;
     case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
     case 'rv-padrao': { const { itens, ...resto } = store.get().config.revista || {}; store.setConfig({ revista: resto }); toast('Itens padrão restaurados'); break; }
     case 'rv-salvar': {
@@ -1915,6 +1978,11 @@ document.addEventListener('click', async (e) => {
 });
 document.addEventListener('toggle', (e) => { if (e.target.classList?.contains('ck-serv')) ui.ckServAberto = e.target.open; }, true);
 document.addEventListener('input', (e) => {
+  if (e.target.id === 'qts-pct') {
+    const v = parseInt(e.target.value, 10);
+    if (v >= 0 && v <= 100) { clearTimeout(ui.tPct); ui.tPct = setTimeout(() => { store.setConfig({ limiteFaltasPct: v }); $('#qts-pct')?.focus(); }, 600); }
+    return;
+  }
   if (e.target.id === 'nt-min') {
     const v = parseFloat(e.target.value.replace(',', '.'));
     if (v >= 0 && v <= 10) { clearTimeout(ui.tMin); ui.tMin = setTimeout(() => { store.setConfig({ mediaMinima: v }); const el = $('#nt-min'); el?.focus(); }, 500); }
@@ -1985,7 +2053,7 @@ async function verificarLembretes() {
   }
   // revista, geladeira (não vêm de missões)
   const { avisados } = store.get();
-  for (const x of lembretesExtras(store.get().config, agora - 6 * 3600000, agora)) {
+  for (const x of [...lembretesExtras(store.get().config, agora - 6 * 3600000, agora), ...lembretesResumo(agora - 3 * 3600000, agora)]) {
     if (avisados[x.tag]) continue;
     let mostrou = false;
     if ('Notification' in window && Notification.permission === 'granted') {
@@ -2005,7 +2073,7 @@ function tique() {
   if (minuto !== ultimoMinuto) {
     ultimoMinuto = minuto;
     aplicarRelatorios();
-    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && document.activeElement?.id !== 'td-busca' && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
+    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && document.activeElement?.id !== 'td-busca' && document.activeElement?.id !== 'qts-pct' && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
     verificarLembretes();
   }
 }
@@ -2026,9 +2094,38 @@ if (['painel', 'escalas', 'qts', 'missoes', 'turma', 'ajustes'].includes(hashIni
 // aviso tocado com o app fechado: ./#abrir=<chave>
 const abrirAoIniciar = hashInicial.startsWith('abrir=') ? decodeURIComponent(hashInicial.slice(6)) : '';
 
+/** Resumo da noite: o que tem no dia seguinte (aulas, compromissos, revista, geladeira, checklist). */
+function resumoDoDia(diaYmd) {
+  const cfg = store.get().config;
+  const d0 = new Date(diaYmd + 'T00:00').getTime();
+  const itens = itensNoIntervalo(d0, d0 + DIA).filter((i) => i.status === 'pendente' && i.inicio >= d0 && i.inicio < d0 + DIA).sort((a, b) => a.inicio - b.inicio);
+  const sem = semanaDoDia(cfg.qts || [], diaYmd);
+  const dia = sem?.dias.find((x) => x.data === diaYmd);
+  const aulas = dia ? blocosDoDia(dia.aulas).filter((b) => b.sigla && !ehIndisponivel(b.sigla)).map((b) => ({ ini: b.ini, sigla: siglaBase(b.sigla), local: b.local })) : [];
+  const revista = diaDeRevista(cfg, d0 + 12 * 3600000) ? `Revista ${configRevista(cfg).hora}` : '';
+  const alimentos = (cfg.geladeira || []).filter((a) => a.validade <= diaYmd).map((a) => a.item);
+  const pendencias = itens.filter((i) => i.origem === 'missao').map((i) => { const m = store.get().missoes.find((x) => x.id === i.id); const f = (m?.checklist || []).filter((c) => !c.ok); return f.length ? `Separou para ${i.titulo}? Falta: ${f.slice(0, 3).map((c) => c.t).join(', ')}${f.length > 3 ? '…' : ''}.` : ''; }).filter(Boolean);
+  const dt = new Date(d0);
+  return textoResumo({ rotuloDia: `Amanhã (${DIAS_CURTOS[dt.getDay()].toLowerCase()} ${ddmm(d0)})`, itens: itens.map((i) => ({ titulo: i.titulo, hora: i.diaTodo ? '' : hhmm(i.inicio), local: i.local })), aulas, revista, alimentos, pendencias });
+}
+function lembretesResumo(de, ate) {
+  const r = store.get().config.resumo || {};
+  if (r.ativo === false) return [];
+  const [h, m] = String(r.hora || '21:00').split(':').map(Number);
+  const out = [];
+  for (let d = inicioDoDia(de - DIA); d.getTime() <= ate; d = somaDias(d, 1)) {
+    const dispara = new Date(d).setHours(h || 0, m || 0, 0, 0);
+    if (dispara < de || dispara > ate) continue;
+    const txt = resumoDoDia(ymdL(somaDias(d, 1).getTime()));
+    if (txt) out.push({ dispara, titulo: txt.titulo, corpo: txt.corpo, chave: 'resumo', tag: `resumo:${ymdL(d.getTime())}`, critico: false });
+  }
+  return out;
+}
+
 /** Abre o que o aviso indica: missão, plantão, revista (painel) ou geladeira (Rotina). */
 function abrirChave(k) {
   if (k === 'revista') { ui.vista = 'painel'; ui.diaPainel = inicioDoDia(Date.now()); renderizar(); return; }
+  if (k === 'resumo') { ui.vista = 'painel'; ui.diaPainel = somaDias(inicioDoDia(Date.now()), 1); renderizar(); return; }
   if (k === 'geladeira') { ui.vista = 'missoes'; ui.mis.status = 'rotina'; renderizar(); return; }
   ui.vista = 'painel'; renderizar();
   k.startsWith('ciclo:') ? abrirPlantao(k) : abrirMissao(k);
@@ -2047,6 +2144,7 @@ function proximosLembretes() {
     }
   }
   for (const x of lembretesExtras(store.get().config, agora + 60000, ate)) out.push(x);
+  for (const x of lembretesResumo(agora + 60000, ate)) out.push(x);
   return out.sort((a, b) => a.dispara - b.dispara);
 }
 
@@ -2085,7 +2183,7 @@ async function iniciarApp(conta) {
   setInterval(tique, 1000);
   verificarLembretes();
   pedirArmazenamentoPersistente();
-  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); if (['revista', 'geladeira'].includes(abrirAoIniciar) || acharItem(abrirAoIniciar)) abrirChave(abrirAoIniciar); }
+  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); if (['revista', 'geladeira', 'resumo'].includes(abrirAoIniciar) || acharItem(abrirAoIniciar)) abrirChave(abrirAoIniciar); }
   aplicarRelatorios();
   abrirPdfCompartilhado();
   if (temNuvem()) {

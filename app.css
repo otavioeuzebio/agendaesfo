@@ -402,3 +402,15 @@ select { border: 1.5px solid var(--line); border-radius: 10px; padding: 10px; ba
 .eu { font-weight: 800; color: var(--gold); }
 .imp-item.minha { box-shadow: 0 0 0 2px var(--gold); }
 .todos-dias { overflow-x: auto; }
+
+/* cruzamentos */
+.falta { justify-self: start; margin-top: 2px; border: 1px dashed var(--line); background: transparent; color: var(--muted); border-radius: 8px; padding: 3px 8px; font: inherit; font-size: .78rem; cursor: pointer; }
+.falta.on { border-style: solid; border-color: var(--danger); color: var(--danger); font-weight: 700; }
+small.alerta { color: var(--p-importante); font-weight: 700; }
+small.erro { color: var(--danger); font-weight: 700; }
+.aviso.conflito { border-color: var(--danger); display: grid; gap: 4px; }
+.aviso.conflito .btn.link { text-align: left; padding: 2px 0; color: var(--fg); }
+.livres { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip.off { opacity: .6; cursor: default; }
+.chip.sel { background: var(--navy); color: var(--on-navy); }
+#m-colegas { display: grid; gap: 6px; }
