@@ -439,3 +439,6 @@ small.alterado { color: var(--p-importante); font-weight: 700; }
 .licenca small { color: var(--muted); }
 .mce-st { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .chip.feito { background: var(--ok); color: #fff; border-color: var(--ok); }
+.linha.pelotao { justify-content: center; gap: 8px; }
+.linha.pelotao select { width: auto; }
+b.alerta { color: var(--p-importante); }

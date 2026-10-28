@@ -254,6 +254,28 @@ function renderTodos(agora) {
 
 /* ---- QTS (Quadro de Trabalho Semanal) ---- */
 /** Alterações do QTS publicadas na turma: entram no QTS de quem tem a mesma semana e o mesmo pelotão. */
+/** Número do pelotão no título do QTS ("1º CFO PM 2026 - 1º Pelotão" → "1"). */
+const pelotaoDoQts = (turma) => (String(turma || '').match(/(\d)\s*[º°ªo]?\s*Pelot/i) || [])[1] || '';
+const PELOTOES = ['1', '2', '3', '4'];
+const seletorPelotao = (atual) => `<div class="linha pelotao"><label class="lbl" for="qts-pel">Seu pelotão (1° CFO/1)</label>
+  <select id="qts-pel"><option value=""${atual ? '' : ' selected'}>Escolher…</option>${PELOTOES.map((n) => `<option value="${n}"${n === atual ? ' selected' : ''}>${n}º Pelotão</option>`).join('')}</select></div>`;
+/** QTS publicados na turma: carrega sozinho o do seu pelotão (mantendo suas alterações). */
+function aplicarQtsPublicados() {
+  const cfg = store.get().config;
+  if (!cfg.pelotao) return;
+  const feitos = new Set(cfg.qtsPubAplicados || []);
+  let qts = cfg.qts || [], novos = [];
+  for (const e of (ui.turma.escalas || []).filter((x) => x.tipo === 'qts' && x.linhas?.[0]?.dias)) {
+    const marca = `${e.id}@${e.criadoEm?.toMillis?.() || e.criadoEm || ''}`;
+    if (feitos.has(marca) || pelotaoDoQts(e.linhas[0].turma) !== cfg.pelotao) continue;
+    qts = guardarSemana(qts, e.linhas[0]);
+    novos.push(marca);
+  }
+  if (!novos.length) return;
+  store.setConfig({ qts, qtsPubAplicados: [...feitos, ...novos].slice(-100) });
+  toast(novos.length === 1 ? 'QTS do seu pelotão carregado' : `${novos.length} semanas do QTS carregadas`);
+  setTimeout(aplicarAltsQts, 300);
+}
 function aplicarAltsQts() {
   const cfg = store.get().config;
   const feitas = new Set(cfg.qtsAltAplicadas || []);
@@ -388,7 +410,8 @@ function renderQts(agora) {
   const q = ui.qts ||= { dia: ymdL(agora), modo: 'dia' };
   if (!sems.length) {
     $('#v-qts').innerHTML = `<div class="secao" style="gap:14px"><h2 class="titulo-vista">QTS</h2>
-      <div class="vazio">Importe o PDF do <b>Quadro de Trabalho Semanal</b> para ver as aulas da semana, a aula de agora e a carga horária de cada disciplina.</div>
+      ${seletorPelotao(store.get().config.pelotao || '')}
+      <div class="vazio">${store.get().config.pelotao ? `Assim que o QTS do ${store.get().config.pelotao}º Pelotão for publicado na turma, ele aparece aqui sozinho. Se tiver o PDF, importe agora.` : 'Escolha o seu pelotão: quando o QTS dele for publicado na turma, ele carrega sozinho toda semana. Ou importe o PDF do <b>Quadro de Trabalho Semanal</b>.'}</div>
       <button class="btn ouro" type="button" data-acao="importar-pdf">Importar QTS (PDF)</button></div>`;
     return;
   }
@@ -434,7 +457,8 @@ function renderQts(agora) {
     <div class="cal-cab"><button type="button" data-qtsnav="-1" aria-label="Semana anterior" ${iSem <= 0 ? 'disabled' : ''}>‹</button>
       <h2>Semana ${esc(sem.semana)}<small>${f(sem.dias[0].data)} a ${f(sem.dias[sem.dias.length - 1].data)}</small></h2>
       <button type="button" data-qtsnav="1" aria-label="Próxima semana" ${iSem >= sems.length - 1 ? 'disabled' : ''}>›</button></div>
-    <small class="cinza" style="text-align:center">${esc(sem.turma || '')}</small>
+    <small class="cinza" style="text-align:center">${esc(sem.turma || '')}${pelotaoDoQts(sem.turma) && cfgQ.pelotao && pelotaoDoQts(sem.turma) !== cfgQ.pelotao ? ` · <b class="alerta">não é o seu pelotão (${cfgQ.pelotao}º)</b>` : ''}</small>
+    ${seletorPelotao(cfgQ.pelotao || '')}
     ${atual || proxima ? `<div class="aula-destaque">${atual ? `<div style="--cor:${corSigla(atual.sigla)}"><span class="lbl">Agora</span><b>${esc(capitaliza(nomeDisc(atual.semana, atual.sigla)) || atual.sigla)}</b><small>até ${atual.fim}${atual.local ? ' · ' + esc(atual.local) : ''} · faltam <span data-cd-fim="${atual.fimMs}">${contagem(atual.fimMs - agora)}</span></small></div>` : ''}
       ${proxima ? `<div style="--cor:${corSigla(proxima.sigla)}"><span class="lbl">${atual ? 'Depois' : 'Próxima aula'}</span><b>${esc(capitaliza(nomeDisc(proxima.semana, proxima.sigla)) || proxima.sigla)}</b><small>${esc(rotuloQuando(proxima.data, proxima.ini, agora))}${proxima.local ? ' · ' + esc(proxima.local) : ''}</small></div>` : ''}</div>` : ''}
     <div class="linha">${chip({ rotulo: 'Dia', ativo: q.modo === 'dia', dados: 'data-qtsmodo="dia"', peq: true })}${chip({ rotulo: 'Semana', ativo: q.modo === 'semana', dados: 'data-qtsmodo="semana"', peq: true })}${chip({ rotulo: 'Disciplinas', ativo: q.modo === 'disc', dados: 'data-qtsmodo="disc"', peq: true })}
@@ -1055,6 +1079,7 @@ async function carregarTurma() {
   T.trocas = await tentar(nuvem.minhasTrocas, T.trocas);
   T.carregado = true; T.carregando = false;
   aplicarTrocas();
+  aplicarQtsPublicados();
   aplicarAltsQts();
   atualizarBadge();
   if (ui.vista === 'turma' || ui.vista === 'painel') renderizar();
@@ -1644,7 +1669,8 @@ function desenharQtsImport(imp, corpo) {
   const podePublicar = imp.origem === 'pdf' && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante');
   if (imp.modo === 'publicar') {
     corpo.innerHTML = `<div class="previa"><b>${esc(q.titulo)}</b><span>${esc(q.turma)}</span></div>
-      <div class="campo"><label class="lbl" for="im-titulo">Título para a turma</label><input id="im-titulo" value="${esc(q.titulo)}"></div>
+      <div class="campo"><label class="lbl" for="im-titulo">Título para a turma</label><input id="im-titulo" value="${esc(q.titulo + (pelotaoDoQts(q.turma) ? ` · ${pelotaoDoQts(q.turma)}º Pelotão` : ''))}"></div>
+      <p class="dica">Quem escolheu o ${pelotaoDoQts(q.turma) || ''}º Pelotão na aba QTS recebe esta semana sozinho.</p>
       <div class="linha"><button class="btn pri" type="button" data-imp="publicar">Publicar</button><label class="btn" for="arquivo-pdf" style="cursor:pointer">Outro PDF</label></div>`;
     return;
   }
@@ -1775,7 +1801,7 @@ $('#importar-corpo').addEventListener('click', async (e) => {
   }
   if (b.dataset.imp === 'salvar-qts') {
     const novas = guardarSemana(store.get().config.qts, imp.qts);
-    store.setConfig({ qts: novas });
+    store.setConfig({ qts: novas, ...(store.get().config.pelotao || !pelotaoDoQts(imp.qts.turma) ? {} : { pelotao: pelotaoDoQts(imp.qts.turma) }) });
     const mantidas = novas.find((x) => x.id === imp.qts.id)?.mantidas || 0;
     setTimeout(aplicarAltsQts, 300);
     fecharFolha('#dlg-importar'); vibrar(25);
@@ -2209,6 +2235,7 @@ document.addEventListener('input', (e) => {
   }
 });
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'qts-pel') { store.setConfig({ pelotao: e.target.value, qtsPubAplicados: [] }); toast(e.target.value ? `${e.target.value}º Pelotão escolhido` : 'Pelotão removido'); if (temNuvem()) { ui.turma.carregado = false; carregarTurma(); } return; }
   if (e.target.id === 'td-doc') { ui.todos = { doc: e.target.value, busca: '', data: '' }; renderizar(); return; }
   const rv = e.target.closest?.('[data-rev]'); if (!rv) return;
   const r = revistaDoDia(store.get().config, Date.now());
