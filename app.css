@@ -442,3 +442,13 @@ small.alterado { color: var(--p-importante); font-weight: 700; }
 .linha.pelotao { justify-content: center; gap: 8px; }
 .linha.pelotao select { width: auto; }
 b.alerta { color: var(--p-importante); }
+
+/* contagem para o fim do curso */
+.formatura { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; padding: 12px 14px; border-radius: 14px; background: linear-gradient(150deg, var(--navy), color-mix(in srgb, var(--navy) 80%, var(--gold))); color: var(--on-navy); }
+.formatura .fmt-n { display: grid; justify-items: center; line-height: 1; padding-right: 14px; border-right: 1px solid color-mix(in srgb, var(--on-navy) 25%, transparent); }
+.formatura .fmt-n b { font: 800 2.6rem var(--font-cond); color: var(--gold); font-variant-numeric: tabular-nums; }
+.formatura .fmt-n span { font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; opacity: .85; }
+.formatura .fmt-t { display: grid; gap: 3px; min-width: 0; }
+.formatura .lbl { color: var(--gold); }
+.formatura small { opacity: .8; }
+.formatura .barra-ha { background: color-mix(in srgb, var(--on-navy) 20%, transparent); }

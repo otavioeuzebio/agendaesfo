@@ -540,6 +540,32 @@ function lembretesLicenca(de, ate) {
   return out;
 }
 
+/** Contagem regressiva para o fim do curso (padrão: 10/12/2027). */
+const FIM_CURSO_PADRAO = '2027-12-10';
+function cartaoFormatura(agora) {
+  const cfg = store.get().config;
+  if (cfg.formatura?.ocultar) return '';
+  const fim = new Date((cfg.formatura?.data || FIM_CURSO_PADRAO) + 'T00:00');
+  const hoje = inicioDoDia(agora);
+  const dias = Math.round((fim - hoje) / DIA);
+  if (dias < 0) return '';
+  // meses e dias restantes (calendário)
+  let m = (fim.getFullYear() - hoje.getFullYear()) * 12 + fim.getMonth() - hoje.getMonth();
+  let ref = new Date(hoje.getFullYear(), hoje.getMonth() + m, hoje.getDate());
+  if (ref > fim) { m--; ref = new Date(hoje.getFullYear(), hoje.getMonth() + m, hoje.getDate()); }
+  const d = Math.round((fim - ref) / DIA);
+  const ini = cfg.formatura?.inicio ? new Date(cfg.formatura.inicio + 'T00:00') : null;
+  const pct = ini && fim > ini ? Math.min(100, Math.max(0, ((hoje - ini) / (fim - ini)) * 100)) : null;
+  const semanas = Math.floor(dias / 7);
+  return `<div class="formatura" role="region" aria-label="Contagem para o fim do curso">
+    <div class="fmt-n"><b class="num">${dias.toLocaleString('pt-BR')}</b><span>${dias === 1 ? 'dia' : 'dias'}</span></div>
+    <div class="fmt-t"><span class="lbl">${dias === 0 ? 'Hoje é o fim do curso!' : 'Para o fim do curso'}</span>
+      <b>${fim.getDate()} de ${MESES[fim.getMonth()].toLowerCase()} de ${fim.getFullYear()}</b>
+      <small>${m > 0 ? `${m} ${m === 1 ? 'mês' : 'meses'}${d ? ` e ${d} ${d === 1 ? 'dia' : 'dias'}` : ''} · ` : ''}${semanas} semana${semanas === 1 ? '' : 's'}</small>
+      ${pct != null ? `<div class="barra-ha" style="--cor:var(--gold)" role="img" aria-label="${pct.toFixed(0)}% do curso concluído"><i style="width:${pct.toFixed(1)}%"></i></div><small>${pct.toFixed(1).replace('.', ',')}% do curso concluído</small>` : ''}</div>
+  </div>`;
+}
+
 /** Revista matinal no painel: aparece nos dias de revista, até 12h, enquanto não estiver pronta. */
 function cartaoRevista(agora) {
   const cfg = store.get().config;
@@ -631,6 +657,7 @@ function renderPainel(agora) {
   const servicos = emServicoAgora(agora);
   $('#v-painel').innerHTML = `<div class="secao" style="gap:18px">
     ${servicos.map((i) => cartaoEmServico(i, agora)).join('')}
+    ${cartaoFormatura(agora)}
     ${cartaoAula(agora)}
     ${cartaoRevista(agora)}
     ${cartaoLicenca(agora)}
@@ -983,6 +1010,13 @@ function renderAjustes() {
     <div class="ajuste"><h3>Nome no topo</h3>
       <div class="campo"><input id="aj-nome" value="${esc(config.nome)}" aria-label="Nome exibido no topo"></div>
       <button class="btn pri" type="button" data-acao="salvar-nome">Salvar nome</button></div>
+    <div class="ajuste"><h3>Fim do curso</h3>
+      <p>Contagem regressiva no Painel. Com a data de início, aparece também quanto do curso já foi.</p>
+      <div class="dupla"><div class="campo"><label class="lbl" for="fc-fim">Fim do curso</label><input id="fc-fim" type="date" value="${esc(store.get().config.formatura?.data || FIM_CURSO_PADRAO)}"></div>
+        <div class="campo"><label class="lbl" for="fc-ini">Início (opcional)</label><input id="fc-ini" type="date" value="${esc(store.get().config.formatura?.inicio || '')}"></div></div>
+      <label class="linha"><input type="checkbox" id="fc-mostrar" ${store.get().config.formatura?.ocultar ? '' : 'checked'}> <span>Mostrar no Painel</span></label>
+      <button class="btn pri" type="button" data-acao="fc-salvar">Salvar</button></div>
+
     <div class="ajuste"><h3>Seus nomes nas escalas</h3>
       <p>Usados para achar os seus serviços ao importar uma escala em PDF.</p>
       <div class="campo"><label class="lbl" for="aj-ncompleto">Nome completo (Serviço Interno)</label><input id="aj-ncompleto" value="${esc(config.nomeCompleto || '')}" autocomplete="name"></div>
@@ -2112,6 +2146,7 @@ document.addEventListener('click', async (e) => {
       ui.editLicenca = null; store.setConfig({ licenca: { ...lic, excecoes: ex } });
       toast(ac.dataset.acao === 'lx-padrao' ? 'Licença voltou ao padrão' : 'Licença deste fim de semana alterada'); break;
     }
+    case 'fc-salvar': store.setConfig({ formatura: { data: $('#fc-fim').value || FIM_CURSO_PADRAO, inicio: $('#fc-ini').value || '', ocultar: !$('#fc-mostrar').checked } }); toast('Fim do curso salvo'); break;
     case 'lc-salvar': store.setConfig({ licenca: { ...(store.get().config.licenca || {}), ativo: $('#lc-ativo').checked, saidaDia: +$('#lc-sdia').value, saidaHora: $('#lc-shora').value || '18:00', retornoDia: +$('#lc-rdia').value, retornoHora: $('#lc-rhora').value || '19:00' } }); toast('Licença salva'); break;
     case 'rs-salvar': store.setConfig({ resumo: { ativo: $('#rs-ativo').checked, hora: $('#rs-hora').value || '21:00' } }); toast('Resumo da noite salvo'); break;
     case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
