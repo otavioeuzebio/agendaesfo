@@ -8,7 +8,7 @@
  *
  * Ao publicar uma nova versão, altere VERSAO para forçar a atualização.
  */
-const VERSAO = 'agenda-cadete-v2.7.1';
+const VERSAO = 'agenda-cadete-v2.8.0';
 const ARQUIVOS = [
   './',
   './index.html',

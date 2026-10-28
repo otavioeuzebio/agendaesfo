@@ -62,3 +62,27 @@ test('guarda as semanas sem duplicar e acha a semana do dia', () => {
   assert.equal(semanaDoDia(l, '2026-10-27').id, q.id);
   assert.equal(semanaDoDia(l, '2026-12-01').id, q.id, 'a mais próxima');
 });
+
+test('alteração manual: muda aulas, desfaz e sobrevive à reimportação', async () => {
+  const { editarAulas, restaurarAulas } = await import('../qts.js');
+  const q = lerQts(qts());
+  let l = guardarSemana([], q);
+  l = editarAulas(l, q.id, '2026-10-26', [3], { sigla: 'TIRO', nome: 'Instrução de Tiro', local: 'Estande', instrutor: 'Sgt Teste', nota: 'aula extra', ini: '13:00', fim: '14:00' });
+  const a3 = l[0].dias[0].aulas.find((a) => a.n === 3);
+  assert.deepEqual([a3.sigla, a3.local, a3.ini, a3.fim, a3.alterada, a3.nota], ['TIRO', 'Estande', '13:00', '14:00', true, 'aula extra']);
+  assert.equal(l[0].legenda.TIRO.nome, 'INSTRUÇÃO DE TIRO');
+  // sem aula nas duas primeiras
+  l = editarAulas(l, q.id, '2026-10-26', [1, 2], { sigla: '', nota: 'instrutor em missão' });
+  assert.equal(blocosDoDia(l[0].dias[0].aulas)[0].sigla, '');
+  assert.equal(blocosDoDia(l[0].dias[0].aulas)[0].alterada, true);
+  // reimportar a mesma semana mantém as alterações
+  const r = guardarSemana(l, lerQts(qts()));
+  assert.equal(r[0].mantidas, 3);
+  assert.equal(r[0].dias[0].aulas.find((a) => a.n === 3).sigla, 'TIRO');
+  // desfazer uma aula e depois o dia
+  let d = restaurarAulas(r, q.id, '2026-10-26', [3]);
+  assert.deepEqual([d[0].dias[0].aulas.find((a) => a.n === 3).sigla, d[0].dias[0].aulas.find((a) => a.n === 3).ini], ['', '13:30']);
+  d = restaurarAulas(d, q.id, '2026-10-26');
+  assert.deepEqual(d[0].dias[0].aulas.map((a) => a.sigla), ['TST', 'TST', '', 'EFX']);
+  assert.ok(d[0].dias[0].aulas.every((a) => !a.alterada));
+});

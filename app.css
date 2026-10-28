@@ -414,3 +414,18 @@ small.erro { color: var(--danger); font-weight: 700; }
 .chip.off { opacity: .6; cursor: default; }
 .chip.sel { background: var(--navy); color: var(--on-navy); }
 #m-colegas { display: grid; gap: 6px; }
+
+/* edição do QTS */
+.aula { position: relative; }
+.ed-aula { position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: .95rem; cursor: pointer; }
+.aula.vaga { padding-right: 44px; }
+.aula > div { padding-right: 30px; }
+.aula.mudou { border-style: dashed; }
+small.alterado { color: var(--p-importante); font-weight: 700; }
+.eq-aulas { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.eq-aula { display: grid; justify-items: center; gap: 1px; padding: 6px 2px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: inherit; font: inherit; font-size: .8rem; cursor: pointer; }
+.eq-aula small { color: var(--muted); font-size: .7rem; }
+.eq-aula span { font-weight: 700; font-size: .7rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eq-aula.sel { background: var(--navy); color: var(--on-navy); border-color: var(--navy); }
+.eq-aula.sel small { color: inherit; opacity: .8; }
+.eq-aula.mudou { border-color: var(--p-importante); border-style: dashed; }

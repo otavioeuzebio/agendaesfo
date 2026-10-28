@@ -102,8 +102,8 @@ export function blocosDoDia(aulas) {
   const out = [];
   for (const a of aulas) {
     const ult = out[out.length - 1];
-    if (ult && ult.sigla === a.sigla && ult.local === a.local && ult.instrutor === a.instrutor) { ult.fim = a.fim; ult.qtd++; ult.ultima = a.n; }
-    else out.push({ sigla: a.sigla, local: a.local, ini: a.ini, fim: a.fim, qtd: 1, primeira: a.n, ultima: a.n, instrutor: a.instrutor, adjuntos: a.adjuntos || [] });
+    if (ult && ult.sigla === a.sigla && ult.local === a.local && ult.instrutor === a.instrutor && ult.alterada === !!a.alterada && (ult.nota || '') === (a.nota || '')) { ult.fim = a.fim; ult.qtd++; ult.ultima = a.n; }
+    else out.push({ sigla: a.sigla, local: a.local, ini: a.ini, fim: a.fim, qtd: 1, primeira: a.n, ultima: a.n, instrutor: a.instrutor, adjuntos: a.adjuntos || [], alterada: !!a.alterada, nota: a.nota || '' });
   }
   return out;
 }
@@ -131,8 +131,9 @@ export function aulaAgora(semanas, agora = Date.now()) {
 
 /** Guarda a semana importada (substitui a mesma semana) e mantém as 12 mais recentes. */
 export function guardarSemana(lista = [], qts) {
+  const antiga = (lista || []).find((s) => s.id === qts.id);
   const sem = (lista || []).filter((s) => s.id !== qts.id);
-  sem.push({ ...qts, importadoEm: Date.now() });
+  sem.push({ ...manterAlteracoes(qts, antiga), importadoEm: Date.now() });
   return sem.sort((a, b) => a.id.localeCompare(b.id)).slice(-12);
 }
 
@@ -141,4 +142,61 @@ export function semanaDoDia(lista = [], dataYmd) {
   if (!lista.length) return null;
   return lista.find((s) => s.dias[0]?.data <= dataYmd && dataYmd <= s.dias[s.dias.length - 1]?.data)
     || [...lista].sort((a, b) => Math.abs(new Date(a.dias[0].data) - new Date(dataYmd)) - Math.abs(new Date(b.dias[0].data) - new Date(dataYmd)))[0];
+}
+
+/* ------------------------------ alterações manuais ------------------------------ */
+const CAMPOS = ['sigla', 'local', 'instrutor', 'adjuntos', 'ini', 'fim'];
+const copia = (o) => JSON.parse(JSON.stringify(o));
+
+/** Ao reimportar a mesma semana, as aulas alteradas à mão continuam como estavam. */
+export function manterAlteracoes(nova, antiga) {
+  if (!antiga) return nova;
+  const q = copia(nova);
+  let n = 0;
+  for (const d of q.dias) {
+    const dv = antiga.dias.find((x) => x.data === d.data);
+    if (!dv) continue;
+    d.aulas = d.aulas.map((a) => { const v = dv.aulas.find((x) => x.n === a.n); if (v?.alterada) { n++; return { ...v, orig: { ...Object.fromEntries(CAMPOS.map((k) => [k, a[k]])) } }; } return a; });
+  }
+  for (const [k, v] of Object.entries(antiga.legenda || {})) if (v.manual && !q.legenda[k]) q.legenda[k] = v;
+  q.mantidas = n;
+  return q;
+}
+
+/**
+ * Altera aulas de um dia. mudanca: { sigla, nome?, local, instrutor, nota, ini?, fim? }
+ * (sigla '' = sem aula). Guarda o original para poder desfazer.
+ */
+export function editarAulas(semanas, semanaId, data, ns, mudanca) {
+  const out = copia(semanas);
+  const sem = out.find((s) => s.id === semanaId);
+  const dia = sem?.dias.find((d) => d.data === data);
+  if (!dia) return semanas;
+  const sig = String(mudanca.sigla || '').trim();
+  if (sig && mudanca.nome && !sem.legenda[siglaBase(sig)]) sem.legenda[siglaBase(sig)] = { nome: mudanca.nome.trim().toUpperCase(), instrutor: mudanca.instrutor || '', adjuntos: [], ha: null, manual: true };
+  for (const a of dia.aulas) {
+    if (!ns.includes(a.n)) continue;
+    if (!a.alterada) a.orig = Object.fromEntries(CAMPOS.map((k) => [k, copia(a[k] ?? '')]));
+    a.sigla = sig;
+    a.local = (mudanca.local || '').trim();
+    a.instrutor = sig ? (mudanca.instrutor || '').trim() : '';
+    a.adjuntos = sig && a.orig && a.orig.sigla === sig ? a.orig.adjuntos || [] : [];
+    a.nota = (mudanca.nota || '').trim();
+    if (ns.length === 1 && mudanca.ini && mudanca.fim) { a.ini = mudanca.ini; a.fim = mudanca.fim; }
+    a.alterada = true;
+  }
+  return out;
+}
+
+/** Volta as aulas escolhidas (ou o dia inteiro) ao que veio no PDF. */
+export function restaurarAulas(semanas, semanaId, data, ns = null) {
+  const out = copia(semanas);
+  const dia = out.find((s) => s.id === semanaId)?.dias.find((d) => d.data === data);
+  if (!dia) return semanas;
+  for (const a of dia.aulas) {
+    if (!a.alterada || (ns && !ns.includes(a.n))) continue;
+    Object.assign(a, a.orig || {});
+    delete a.orig; delete a.alterada; delete a.nota;
+  }
+  return out;
 }

@@ -19,7 +19,7 @@ import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, me
 import * as nuvem from './nuvem.js';
 import { colegasNaEscala, livresParaTroca, casaColega, conflitos as conflitosAgenda, resumoFaltas, chaveAula, LIMITE_FALTAS_PADRAO, discDaSigla, opcoesDisciplina, textoResumo } from './cruzamentos.js';
 import { listarDocs, guardarDoc, apagarDoc, ehMeu, filtrar, agrupar as agruparLinhas, datasDoDoc, TIPOS_CONSULTA } from './documentos.js';
-import { ehQts, lerQts, blocosDoDia, aulaAgora, guardarSemana, semanaDoDia, siglaBase, ehIndisponivel } from './qts.js';
+import { ehQts, lerQts, blocosDoDia, aulaAgora, guardarSemana, semanaDoDia, siglaBase, ehIndisponivel, editarAulas, restaurarAulas } from './qts.js';
 import { configRevista, diaDeRevista, revistaDoDia, situacaoAlimento, ROTULO_ALIMENTO, alimentosEmAlerta, lembretesExtras, relatoriosACriar, PRAZO_RELATORIO_PADRAO, ymd as ymdR } from './rotina.js';
 import { gcalConfigurado, sincronizarAgenda, desconectar as gcalDesconectar } from './gcal.js';
 import { gerarICS, baixar } from './ics.js';
@@ -253,6 +253,83 @@ function renderTodos(agora) {
 }
 
 /* ---- QTS (Quadro de Trabalho Semanal) ---- */
+/** Abre o editor de aulas do dia (de uma faixa de aulas ou do dia inteiro). */
+function abrirEdicaoQts(dia, primeira, ultima) {
+  const sems = store.get().config.qts || [];
+  const sem = semanaDoDia(sems, dia);
+  const d = sem?.dias.find((x) => x.data === dia); if (!d) return;
+  const sel = primeira ? d.aulas.filter((a) => a.n >= +primeira && a.n <= +ultima).map((a) => a.n) : [];
+  const a0 = d.aulas.find((a) => a.n === sel[0]) || {};
+  ui.edQts = { semId: sem.id, dia, sel, sigla: a0.sigla ?? '', local: a0.local || '', instrutor: a0.instrutor || '', nota: a0.nota || '', ini: a0.ini || '', fim: a0.fim || '', novaSig: '', novoNome: '' };
+  desenharEdicaoQts();
+  abrirFolha('#dlg-qts');
+}
+function desenharEdicaoQts() {
+  const e = ui.edQts, sems = store.get().config.qts || [];
+  const sem = sems.find((s) => s.id === e.semId), d = sem.dias.find((x) => x.data === e.dia);
+  const siglas = Object.entries(sem.legenda || {}).filter(([k]) => !ehIndisponivel(k)).sort((a, b) => a[0].localeCompare(b[0]));
+  const valor = e.sigla === '__nova' ? '__nova' : ehIndisponivel(e.sigla) ? 'IND' : siglas.some(([k]) => k === siglaBase(e.sigla)) ? siglaBase(e.sigla) : e.sigla ? '__nova' : '';
+  const algumaAlterada = d.aulas.some((a) => e.sel.includes(a.n) && a.alterada);
+  $('#qts-ed-t').textContent = `Alterar aulas · ${DIAS_CURTOS[d.dow]} ${ddmm(new Date(e.dia + 'T12:00').getTime())}`;
+  $('#qts-ed-corpo').innerHTML = `
+    <span class="lbl">Aulas <small>toque para escolher quais mudam</small></span>
+    <div class="eq-aulas">${d.aulas.map((a) => `<button type="button" class="eq-aula${e.sel.includes(a.n) ? ' sel' : ''}${a.alterada ? ' mudou' : ''}" data-edn="${a.n}" aria-pressed="${e.sel.includes(a.n)}">
+      <b>${a.n}ª</b><small>${a.ini}</small><span>${esc(siglaBase(a.sigla) || '—')}</span></button>`).join('')}</div>
+    <div class="campo"><label class="lbl" for="eq-sig">Fica</label><select id="eq-sig">
+      <option value=""${valor === '' ? ' selected' : ''}>Sem aula</option>
+      ${siglas.map(([k, l]) => `<option value="${esc(k)}"${valor === k ? ' selected' : ''}>${esc(k)} – ${esc(capitaliza(l.nome))}</option>`).join('')}
+      <option value="IND"${valor === 'IND' ? ' selected' : ''}>Indisponível</option>
+      <option value="__nova"${valor === '__nova' ? ' selected' : ''}>Outra disciplina…</option></select></div>
+    ${valor === '__nova' ? `<div class="dupla"><div class="campo"><label class="lbl" for="eq-nsig">Sigla</label><input id="eq-nsig" maxlength="12" value="${esc(e.sigla === '__nova' ? e.novaSig : e.sigla)}" placeholder="Ex.: TIRO"></div>
+      <div class="campo"><label class="lbl" for="eq-nnome">Nome</label><input id="eq-nnome" value="${esc(e.novoNome)}" placeholder="Ex.: Instrução de Tiro"></div></div>` : ''}
+    ${valor !== '' && valor !== 'IND' ? `<div class="dupla"><div class="campo"><label class="lbl" for="eq-local">Local</label><input id="eq-local" value="${esc(e.local)}" placeholder="Ex.: Aud. EsFO, BPEC"></div>
+      <div class="campo"><label class="lbl" for="eq-inst">Instrutor</label><input id="eq-inst" value="${esc(e.instrutor)}"></div></div>` : ''}
+    ${e.sel.length === 1 ? `<div class="dupla"><div class="campo"><label class="lbl" for="eq-ini">Início</label><input id="eq-ini" type="time" value="${esc(e.ini)}"></div><div class="campo"><label class="lbl" for="eq-fim">Fim</label><input id="eq-fim" type="time" value="${esc(e.fim)}"></div></div>` : ''}
+    <div class="campo"><label class="lbl" for="eq-nota">Motivo / observação</label><input id="eq-nota" value="${esc(e.nota)}" placeholder="Ex.: aula antecipada, instrutor em missão"></div>
+    <button class="btn pri" type="button" data-eq="salvar" ${e.sel.length ? '' : 'disabled'}>${e.sel.length ? `Salvar ${e.sel.length} aula${e.sel.length > 1 ? 's' : ''}` : 'Escolha as aulas'}</button>
+    ${algumaAlterada ? '<button class="btn" type="button" data-eq="restaurar">Voltar ao que veio no PDF</button>' : ''}
+    <p class="dica">A mudança vale só para você (e seus aparelhos). Se importar de novo o PDF da mesma semana, as aulas alteradas aqui continuam como você deixou.</p>`;
+}
+function lerCamposEdQts() {
+  const e = ui.edQts;
+  const v = (id) => $('#' + id)?.value ?? null;
+  if (v('eq-local') != null) e.local = v('eq-local');
+  if (v('eq-inst') != null) e.instrutor = v('eq-inst');
+  if (v('eq-nota') != null) e.nota = v('eq-nota');
+  if (v('eq-ini') != null) e.ini = v('eq-ini');
+  if (v('eq-fim') != null) e.fim = v('eq-fim');
+  if (v('eq-nsig') != null) e.novaSig = v('eq-nsig');
+  if (v('eq-nnome') != null) e.novoNome = v('eq-nnome');
+}
+$('#qts-ed-corpo').addEventListener('change', (ev) => {
+  if (ev.target.id !== 'eq-sig') return;
+  const e = ui.edQts; lerCamposEdQts();
+  e.sigla = ev.target.value;
+  const sem = (store.get().config.qts || []).find((s) => s.id === e.semId);
+  const lg = sem?.legenda?.[e.sigla];
+  if (lg) e.instrutor = capitaliza(lg.instrutor || '');
+  desenharEdicaoQts();
+});
+$('#qts-ed-corpo').addEventListener('click', (ev) => {
+  const e = ui.edQts;
+  const n = ev.target.closest('[data-edn]');
+  if (n) { lerCamposEdQts(); const k = +n.dataset.edn; e.sel = e.sel.includes(k) ? e.sel.filter((x) => x !== k) : [...e.sel, k].sort((a, b) => a - b); return desenharEdicaoQts(); }
+  const b = ev.target.closest('[data-eq]'); if (!b) return;
+  const sems = store.get().config.qts || [];
+  if (b.dataset.eq === 'restaurar') {
+    store.setConfig({ qts: restaurarAulas(sems, e.semId, e.dia, e.sel) });
+    fecharFolha('#dlg-qts'); toast('Aulas voltaram ao QTS original'); return;
+  }
+  lerCamposEdQts();
+  let sigla = e.sigla, nome = '';
+  if (e.sigla === '__nova' || (e.sigla && !['IND'].includes(e.sigla) && !(sems.find((s) => s.id === e.semId)?.legenda || {})[siglaBase(e.sigla)])) {
+    sigla = (e.novaSig || '').trim().toUpperCase(); nome = (e.novoNome || '').trim();
+    if (!sigla) { toast('Informe a sigla da disciplina'); return; }
+  }
+  if (e.sel.length === 1 && e.ini && e.fim && e.fim <= e.ini) { toast('O fim precisa ser depois do início'); return; }
+  store.setConfig({ qts: editarAulas(sems, e.semId, e.dia, e.sel, { sigla, nome: nome || sigla, local: e.local, instrutor: e.instrutor, nota: e.nota, ini: e.ini, fim: e.fim }) });
+  fecharFolha('#dlg-qts'); vibrar(20); toast(`${e.sel.length} aula${e.sel.length > 1 ? 's' : ''} alterada${e.sel.length > 1 ? 's' : ''}`);
+});
 function faltasDoBloco(dia, b) {
   const f = store.get().config.faltas || {};
   let n = 0; for (let i = b.primeira; i <= b.ultima; i++) if (f[chaveAula(dia, i)]) n++;
@@ -297,15 +374,16 @@ function renderQts(agora) {
   const diaSel = sem.dias.find((d) => d.data === q.dia);
 
   const blocoHtml = (b, dia) => {
-    if (!b.sigla) return `<div class="aula vaga"><span class="h">${b.ini}–${b.fim}</span><span>Sem aula</span></div>`;
-    if (ehIndisponivel(b.sigla)) return `<div class="aula vaga"><span class="h">${b.ini}–${b.fim}</span><span>Indisponível</span></div>`;
+    const ed = `<button type="button" class="ed-aula" data-qtsed="${dia}|${b.primeira}|${b.ultima}" aria-label="Alterar ${b.ini}–${b.fim}">✎</button>`;
+    const marca = b.alterada ? `<small class="alterado">Alterado${b.nota ? ': ' + esc(b.nota) : ''}</small>` : '';
+    if (!b.sigla || ehIndisponivel(b.sigla)) return `<div class="aula vaga${b.alterada ? ' mudou' : ''}"><span class="h">${b.ini}–${b.fim}</span><span>${!b.sigla ? 'Sem aula' : 'Indisponível'}${marca ? '<br>' + marca : ''}</span>${ed}</div>`;
     const lg = sem.legenda?.[siglaBase(b.sigla)] || {};
     const agoraAqui = dia === hoje && b.ini <= hhmm(agora) && hhmm(agora) < b.fim;
     const passou = dia < hoje || (dia === hoje && b.fim <= hhmm(agora));
-    return `<div class="aula${agoraAqui ? ' agora' : ''}${passou ? ' passou' : ''}" style="--cor:${corSigla(b.sigla)}">
+    return `<div class="aula${agoraAqui ? ' agora' : ''}${passou ? ' passou' : ''}${b.alterada ? ' mudou' : ''}" style="--cor:${corSigla(b.sigla)}">${ed}
       <span class="h">${b.ini}<small>${b.fim}</small></span>
       <div><div class="aula-t"><span class="sig">${esc(b.sigla)}</span>${agoraAqui ? '<span class="tag-agora">agora</span>' : ''}</div>
-        <b>${esc(capitaliza(lg.nome) || b.sigla)}</b>
+        <b>${esc(capitaliza(lg.nome) || b.sigla)}</b>${marca}
         <small>${[b.local && '📍 ' + esc(b.local), esc(capitaliza(lg.instrutor || b.instrutor)), `${b.qtd} aula${b.qtd > 1 ? 's' : ''}`].filter(Boolean).join(' · ')}</small>
         ${b.adjuntos?.length ? `<small>Adj.: ${b.adjuntos.map((a) => esc(capitaliza(a))).join(', ')}</small>` : ''}
         ${passou || agoraAqui ? (() => { const nf = faltasDoBloco(dia, b); return `<button type="button" class="falta${nf ? ' on' : ''}" data-falta="${dia}|${b.primeira}|${b.ultima}|${esc(b.sigla)}">${nf ? `Faltei (${nf} aula${nf > 1 ? 's' : ''}) · desfazer` : 'Marcar falta'}</button>`; })() : ''}</div></div>`;
@@ -338,7 +416,8 @@ function renderQts(agora) {
       <div class="semana" role="group" aria-label="Escolher dia">${sem.dias.map((d) => `<button type="button" data-qtsdia="${d.data}" aria-pressed="${d.data === q.dia}">
         <span>${d.data === hoje ? 'HOJE' : DIAS_CURTOS[d.dow].toUpperCase()}</span><b class="num">${+d.data.slice(8)}</b>
         <i class="pt" style="${d.aulas.some((a) => a.sigla && !ehIndisponivel(a.sigla)) ? '' : 'visibility:hidden'}"></i></button>`).join('')}</div>
-      <div class="secao"><h2 class="lbl">${esc(rotuloDia(new Date(q.dia + 'T12:00').getTime(), agora))} · ${f(q.dia)}</h2>
+      <div class="secao"><div class="linha"><h2 class="lbl" style="margin:0">${esc(rotuloDia(new Date(q.dia + 'T12:00').getTime(), agora))} · ${f(q.dia)}</h2>
+        <button class="btn link dir" type="button" data-qtsed="${q.dia}||">Alterar aulas</button>${diaSel.aulas.some((a) => a.alterada) ? `<button class="btn link" type="button" data-acao="qts-desfazer-dia">Desfazer alterações</button>` : ''}</div>
         ${blocosDoDia(diaSel.aulas).map((b, i, arr) => (i && arr[i - 1].fim <= '12:00' && b.ini >= '13:00' ? '<div class="almoco">Almoço</div>' : '') + blocoHtml(b, q.dia)).join('')}</div>`
     : q.modo === 'semana' ? `
       <div class="qts-semana">${sem.dias.map((d) => `<button type="button" class="qts-dia${d.data === hoje ? ' hoje' : ''}" data-qtsdia="${d.data}" data-qtsir="dia">
@@ -1594,10 +1673,12 @@ $('#importar-corpo').addEventListener('click', async (e) => {
     toast(novas === sel.length ? `${novas} serviço${novas > 1 ? 's' : ''} na agenda` : `${novas} novo${novas === 1 ? '' : 's'}, ${sel.length - novas} atualizado${sel.length - novas === 1 ? '' : 's'}`);
   }
   if (b.dataset.imp === 'salvar-qts') {
-    store.setConfig({ qts: guardarSemana(store.get().config.qts, imp.qts) });
+    const novas = guardarSemana(store.get().config.qts, imp.qts);
+    store.setConfig({ qts: novas });
+    const mantidas = novas.find((x) => x.id === imp.qts.id)?.mantidas || 0;
     fecharFolha('#dlg-importar'); vibrar(25);
     ui.qts = { dia: ymdL(Math.max(Date.now(), new Date(imp.qts.dias[0].data + 'T00:00').getTime())), modo: 'dia' };
-    ui.vista = 'qts'; renderizar(); toast(`QTS da semana ${imp.qts.semana} salvo`);
+    ui.vista = 'qts'; renderizar(); toast(`QTS da semana ${imp.qts.semana} salvo${mantidas ? ` · ${mantidas} alteração(ões) sua(s) mantida(s)` : ''}`);
   }
   if (b.dataset.imp === 'ver-todos') {
     if (!imp.docId) imp.docId = guardarDocSinc({ tipo: imp.tipo, titulo: imp.doc?.titulo || imp.nomeArquivo || tituloEscala(imp), linhas: imp.linhas, numero: imp.doc?.numero, meta: imp.doc ? { evento: imp.doc.evento, local: imp.doc.local, fardamento: imp.doc.fardamento } : {} });
@@ -1794,6 +1875,7 @@ document.addEventListener('click', async (e) => {
   const tdd = t.closest('[data-todosdata]'); if (tdd) { ui.todos.data = tdd.dataset.todosdata; renderizar(); return; }
   const qn = t.closest('[data-qtsnav]');
   if (qn) { const sems = store.get().config.qts || []; const i = sems.indexOf(semanaDoDia(sems, ui.qts.dia)) + +qn.dataset.qtsnav; if (sems[i]) ui.qts.dia = sems[i].dias[0].data; renderizar(); return; }
+  const qe = t.closest('[data-qtsed]'); if (qe) { const [dia, a, b] = qe.dataset.qtsed.split('|'); abrirEdicaoQts(dia, a, b); return; }
   const qm = t.closest('[data-qtsmodo]'); if (qm) { ui.qts.modo = qm.dataset.qtsmodo; renderizar(); return; }
   const qd = t.closest('[data-qtsdia]'); if (qd) { ui.qts.dia = qd.dataset.qtsdia; if (qd.dataset.qtsir) ui.qts.modo = 'dia'; renderizar(); return; }
   if (t.closest('[data-ir-rotina]')) { ui.vista = 'missoes'; ui.mis.status = 'rotina'; renderizar(); return; }
@@ -1882,6 +1964,7 @@ document.addEventListener('click', async (e) => {
     case 'salvar-nomes': store.setConfig({ nomeCompleto: $('#aj-ncompleto').value.trim(), nomeGuerra: $('#aj-nguerra').value.trim(), fardamentoPadrao: $('#aj-fard').value.trim() }); toast('Salvo'); break;
     case 'importar-pdf': abrirImportar('importar'); break;
     case 'esc-todos': ui.esc.todos = true; renderizar(); break;
+    case 'qts-desfazer-dia': { const sems = store.get().config.qts || []; const sem = semanaDoDia(sems, ui.qts.dia); store.setConfig({ qts: restaurarAulas(sems, sem.id, ui.qts.dia) }); toast('Dia voltou ao QTS original'); break; }
     case 'esc-minha': ui.esc.todos = false; renderizar(); break;
     case 'td-eu': ui.todos.busca = store.get().config.nomeGuerra || store.get().config.nomeCompleto || ''; renderizar(); break;
     case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); if (temNuvem()) nuvem.agendarSincronizacao(); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
