@@ -198,9 +198,18 @@ export function licencaDoFimDeSemana(itens, cfgLic = {}, agora = Date.now()) {
   // sexta-feira (dia de saída) desta semana; se a licença já acabou, a da próxima
   const base = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - ((hoje.getDay() - c.saidaDia + 7) % 7));
   const em = (d, hhmm) => { const [h, m] = hhmm.split(':').map(Number); const x = new Date(d); x.setHours(h, m, 0, 0); return x.getTime(); };
-  let saida = em(base, c.saidaHora);
-  let retorno = em(new Date(base.getFullYear(), base.getMonth(), base.getDate() + ((c.retornoDia - c.saidaDia + 7) % 7 || 7)), c.retornoHora);
-  if (retorno < agora) { saida += 7 * DIA; retorno += 7 * DIA; }
+  // fim de semana k (0 = o desta semana): padrão ou exceção (feriado, licença estendida…)
+  const semana = (k) => {
+    const sb = new Date(base.getFullYear(), base.getMonth(), base.getDate() + 7 * k);
+    const chave = ymd(sb);
+    const ex = (c.excecoes || {})[chave];
+    const saida = ex?.saida ? new Date(ex.saida).getTime() : em(sb, c.saidaHora);
+    const retorno = ex?.retorno ? new Date(ex.retorno).getTime() : em(new Date(sb.getFullYear(), sb.getMonth(), sb.getDate() + ((c.retornoDia - c.saidaDia + 7) % 7 || 7)), c.retornoHora);
+    return { saida, retorno, chave, excecao: !!ex };
+  };
+  let w = semana(0);
+  if (w.retorno < agora) w = semana(1);
+  const { saida, retorno } = w;
   const bloqueios = [];
   for (const i of itens) {
     const fim = i.fim || i.inicio + HORA;
@@ -209,7 +218,7 @@ export function licencaDoFimDeSemana(itens, cfgLic = {}, agora = Date.now()) {
     if (i.subtipo === 'sobreaviso') bloqueios.push(`Sobreaviso (${quando}): fique em local de fácil acionamento`);
     else if (i.subtipo === 'mce' || (SUBTIPOS_ESCALA.includes(i.subtipo))) bloqueios.push(`${i.titulo} (${quando})`);
   }
-  return { saida, retorno, bloqueios, livre: !bloqueios.length };
+  return { saida, retorno, bloqueios, livre: !bloqueios.length, chave: w.chave, excecao: w.excecao };
 }
 
 /* ------------------------------ equilíbrio na turma ------------------------------ */

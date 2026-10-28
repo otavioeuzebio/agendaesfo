@@ -490,7 +490,14 @@ function cartaoLicenca(agora) {
   if (!l || l.saida - agora > 2 * DIA + 6 * 3600000) return '';
   const quando = (ms) => `${DIAS_CURTOS[new Date(ms).getDay()].toLowerCase()} ${ddmm(ms)} ${hhmm(ms)}`;
   const fora = agora >= l.saida;
-  return `<div class="licenca${l.livre ? '' : ' presa'}"><span class="lbl">Licença do fim de semana</span>
+  const dl = (ms) => { const d = new Date(ms); return `${ymdL(ms)}T${hhmm(ms)}`; };
+  if (ui.editLicenca === l.chave) return `<div class="licenca"><span class="lbl">Licença deste fim de semana</span>
+    <div class="dupla"><div class="campo"><label class="lbl" for="lx-saida">Saída</label><input id="lx-saida" type="datetime-local" value="${dl(l.saida)}"></div>
+      <div class="campo"><label class="lbl" for="lx-ret">Retorno</label><input id="lx-ret" type="datetime-local" value="${dl(l.retorno)}"></div></div>
+    <div class="linha"><button class="btn pri" type="button" data-acao="lx-salvar" data-k="${l.chave}">Salvar</button><button class="btn" type="button" data-acao="lx-cancelar">Cancelar</button>
+      ${l.excecao ? `<button class="btn link dir" type="button" data-acao="lx-padrao" data-k="${l.chave}">Voltar ao padrão</button>` : ''}</div>
+    <small>Vale só para este fim de semana (feriado, licença estendida…).</small></div>`;
+  return `<div class="licenca${l.livre ? '' : ' presa'}"><div class="linha"><span class="lbl">Licença do fim de semana${l.excecao ? ' · alterada' : ''}</span><button class="btn link dir" type="button" data-acao="lx-editar" data-k="${l.chave}">Alterar</button></div>
     ${l.livre ? `<b>${fora ? `Retorno até ${quando(l.retorno)}` : `Saída ${quando(l.saida)} · retorno ${quando(l.retorno)}`}</b>${fora ? `<small>faltam <span data-cd-fim="${l.retorno}">${contagem(l.retorno - agora)}</span></small>` : ''}`
       : `<b>Com compromisso no fim de semana</b>${l.bloqueios.map((b) => `<small>${esc(b)}</small>`).join('')}<small>Retorno (se sair): ${quando(l.retorno)}</small>`}
   </div>`;
@@ -2064,7 +2071,22 @@ document.addEventListener('click', async (e) => {
     case 'td-eu': ui.todos.busca = store.get().config.nomeGuerra || store.get().config.nomeCompleto || ''; renderizar(); break;
     case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); if (temNuvem()) nuvem.agendarSincronizacao(); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
     case 'revista-pronta': { const r = revistaDoDia(store.get().config, Date.now()); store.setConfig({ revistaHoje: { data: r.dia, ok: r.itens.map((_, i) => i), feita: true } }); vibrar(25); toast('Revista pronta. Bom dia!'); break; }
-    case 'lc-salvar': store.setConfig({ licenca: { ativo: $('#lc-ativo').checked, saidaDia: +$('#lc-sdia').value, saidaHora: $('#lc-shora').value || '18:00', retornoDia: +$('#lc-rdia').value, retornoHora: $('#lc-rhora').value || '19:00' } }); toast('Licença salva'); break;
+    case 'lx-editar': ui.editLicenca = ac.dataset.k; renderizar(); break;
+    case 'lx-cancelar': ui.editLicenca = null; renderizar(); break;
+    case 'lx-padrao': case 'lx-salvar': {
+      const lic = { ...(store.get().config.licenca || {}) }; const ex = { ...(lic.excecoes || {}) };
+      if (ac.dataset.acao === 'lx-padrao') delete ex[ac.dataset.k];
+      else {
+        const sa = $('#lx-saida').value, re = $('#lx-ret').value;
+        if (!sa || !re || re <= sa) { toast('O retorno precisa ser depois da saída'); break; }
+        ex[ac.dataset.k] = { saida: sa, retorno: re };
+      }
+      // guarda só as exceções recentes
+      for (const k of Object.keys(ex)) if (k < ymdL(Date.now() - 60 * DIA)) delete ex[k];
+      ui.editLicenca = null; store.setConfig({ licenca: { ...lic, excecoes: ex } });
+      toast(ac.dataset.acao === 'lx-padrao' ? 'Licença voltou ao padrão' : 'Licença deste fim de semana alterada'); break;
+    }
+    case 'lc-salvar': store.setConfig({ licenca: { ...(store.get().config.licenca || {}), ativo: $('#lc-ativo').checked, saidaDia: +$('#lc-sdia').value, saidaHora: $('#lc-shora').value || '18:00', retornoDia: +$('#lc-rdia').value, retornoHora: $('#lc-rhora').value || '19:00' } }); toast('Licença salva'); break;
     case 'rs-salvar': store.setConfig({ resumo: { ativo: $('#rs-ativo').checked, hora: $('#rs-hora').value || '21:00' } }); toast('Resumo da noite salvo'); break;
     case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
     case 'rv-padrao': { const { itens, ...resto } = store.get().config.revista || {}; store.setConfig({ revista: resto }); toast('Itens padrão restaurados'); break; }
@@ -2257,7 +2279,7 @@ function tique() {
   if (minuto !== ultimoMinuto) {
     ultimoMinuto = minuto;
     aplicarRelatorios();
-    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && document.activeElement?.id !== 'td-busca' && document.activeElement?.id !== 'qts-pct' && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
+    if (!document.querySelector('dialog[open]') && document.activeElement?.id !== 'm-busca' && document.activeElement?.id !== 'td-busca' && document.activeElement?.id !== 'qts-pct' && !ui.editLicenca && !document.activeElement?.closest?.('#v-missoes .ajuste')) renderizar();
     verificarLembretes();
   }
 }

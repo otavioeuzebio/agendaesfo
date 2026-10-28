@@ -91,3 +91,16 @@ test('equilíbrio na turma pela escala completa', async () => {
   assert.equal(e.max, 2);
   assert.equal(equilibrioTurma(docs, cfg, 2026, 11), null);
 });
+
+test('licença: exceção num fim de semana (feriado) muda só aquele', async () => {
+  const { licencaDoFimDeSemana } = await import('../cruzamentos.js');
+  const qua = new Date(2026, 9, 28, 10).getTime();
+  const cfgL = { excecoes: { '2026-10-30': { saida: '2026-10-30T18:00', retorno: '2026-11-02T07:00' } } };
+  const l = licencaDoFimDeSemana([], cfgL, qua);
+  assert.deepEqual([new Date(l.retorno).getDate(), new Date(l.retorno).getHours(), l.excecao], [2, 7, true]);
+  // domingo à noite ainda está de licença (retorno só na segunda)
+  assert.equal(new Date(licencaDoFimDeSemana([], cfgL, new Date(2026, 10, 1, 21).getTime()).retorno).getDate(), 2);
+  // o fim de semana seguinte volta ao padrão
+  const prox = licencaDoFimDeSemana([], cfgL, new Date(2026, 10, 3, 10).getTime());
+  assert.deepEqual([new Date(prox.retorno).getDate(), prox.excecao], [8, false]);
+});
