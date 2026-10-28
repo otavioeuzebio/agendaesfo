@@ -88,4 +88,4 @@ export function datasDoDoc(doc, hojeYmd) {
   return { datas: ds, abrir };
 }
 
-export const TIPOS_CONSULTA = { interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação', anotados: 'Planilha de Anotados', namce: 'NAMCE' };
+export const TIPOS_CONSULTA = { interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação', anotados: 'Planilha de Anotados', namce: 'NAMCE', quartos: 'Quartos de hora' };

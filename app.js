@@ -15,7 +15,7 @@ import { store, novoId, pedirArmazenamentoPersistente, usarConta } from './store
 import { iniciarPortao, sairDaConta, aguardarChave } from './portao.js';
 import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel, papelDaConta } from './acesso.js';
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
-import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
+import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, idEscala, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
 import { fardamentoDoDia, licencaDoFimDeSemana, LICENCA_PADRAO, equilibrioTurma, colegasNaEscala, livresParaTroca, casaColega, conflitos as conflitosAgenda, resumoFaltas, chaveAula, LIMITE_FALTAS_PADRAO, discDaSigla, opcoesDisciplina, textoResumo } from './cruzamentos.js';
 import { listarDocs, guardarDoc, apagarDoc, ehMeu, filtrar, agrupar as agruparLinhas, datasDoDoc, TIPOS_CONSULTA } from './documentos.js';
@@ -28,6 +28,7 @@ import { MODELOS, UNIDADES_CPU, crpmDa, horarioPadrao, proximoFimDeSemana, GRUPO
 /** Opções extras por tipo, gravadas em missao.detalhe. */
 const OPCOES_TIPO = { sobreaviso: { rotulo: 'Sobreaviso de', itens: GRUPOS_SOBREAVISO }, salas_comando: { rotulo: 'Sua posição na escala', itens: POSICOES_SALAS } };
 import { interpretarRapido } from './quickParse.js';
+import { lerQuartos, ehTextoQuartos, linhasQuartos, ehMeuNome, dataProvavel, lembretesQuartos } from './quartos.js';
 import { CATEGORIAS, SUBTIPOS, PRIORIDADES, subtiposDe, SUBTIPOS_ESCALA, OPCOES_LEMBRETE, lembretesPadrao, rotuloAntecedencia } from './catalog.js';
 import { DIAS_CURTOS, MESES, inicioDoDia, somaDias, mesmoDia, hhmm, ddmm, rotuloDia, dataPorExtenso, contagem, BLOCOS, blocoDe, gradeDoMes, semanaDe } from './dates.js';
 
@@ -226,6 +227,11 @@ function renderTodos(agora) {
             const rot = (SUBTIPOS[l0.subtipo]?.rotulo || l0.funcao || 'Função') + (l0.detalhe && l0.subtipo !== 'sobreaviso' ? ' · ' + l0.detalhe : l0.subtipo === 'sobreaviso' && l0.detalhe ? ' · ' + l0.detalhe : '');
             return `<div class="func${fn.itens.some((l) => ehMeu(l.nome, cfg)) ? ' minha' : ''}"><span class="lbl">${esc(rot)}</span><div class="nomes">${fn.itens.map(nome).join('')}</div></div>`;
           }).join('')}</div>`).join('') : `<div class="vazio">${busca ? 'Ninguém com esse nome nesta escala.' : 'Nada neste dia.'}</div>`}`;
+    } else if (doc.tipo === 'quartos') {
+      const minha = (l) => ehMeuNome(l.nome, cfg);
+      corpo = `${doc.linhas[0]?.data ? `<small class="cinza">Serviço de ${esc(rotuloDia(new Date(doc.linhas[0].data + 'T12:00').getTime(), agora).toLowerCase())} · ${f(doc.linhas[0].data)}</small>` : ''}
+        ${agruparLinhas(linhas, (l) => l.secao || 'Guarda').map((g) => `<div class="secao"><h2 class="lbl">${esc(g.chave)}</h2>
+          ${g.itens.map((l) => `<div class="func quarto${minha(l) ? ' minha' : ''}"><span class="lbl">${esc(l.detalhe)}</span><div class="nomes"><span class="${minha(l) ? 'eu' : ''}">${esc(l.nome)}</span></div></div>`).join('')}</div>`).join('') || '<div class="vazio">Ninguém com esse nome.</div>'}`;
     } else if (doc.tipo === 'desfile') {
       corpo = `${doc.linhas[0]?.data ? `<small class="cinza">Semana ${f(doc.linhas[0].data)} a ${f(doc.linhas[0].ate)}</small>` : ''}
         ${linhas.map((l) => `<div class="func${ehMeu(l.nome, cfg) ? ' minha' : ''}"><span class="lbl">${esc(l.detalhe)}</span><div class="nomes">${nome(l)}</div></div>`).join('') || '<div class="vazio">Ninguém com esse nome.</div>'}`;
@@ -275,6 +281,22 @@ function aplicarQtsPublicados() {
   store.setConfig({ qts, qtsPubAplicados: [...feitos, ...novos].slice(-100) });
   toast(novos.length === 1 ? 'QTS do seu pelotão carregado' : `${novos.length} semanas do QTS carregadas`);
   setTimeout(aplicarAltsQts, 300);
+}
+/** Quartos de hora publicados na turma: entram sozinhos no serviço de quem está na mensagem. */
+function aplicarQuartosPublicados() {
+  const cfg = store.get().config;
+  if (!cfg.nomeGuerra && !cfg.nomeCompleto) return;
+  const feitos = new Set(cfg.quartosAplicados || []);
+  const hoje = ymdL(Date.now() - DIA);
+  let n = 0; const marcas = [];
+  for (const e of (ui.turma.escalas || []).filter((x) => x.tipo === 'quartos' && !feitos.has(x.id))) {
+    marcas.push(e.id);
+    const meus = (e.linhas || []).filter((l) => l.data >= hoje && ehMeuNome(l.nome, cfg));
+    if (meus.length) { const r = aplicarMeusQuartos(meus); n += r.novas + r.atual; }
+  }
+  if (!marcas.length) return;
+  store.setConfig({ quartosAplicados: [...feitos, ...marcas].slice(-200) });
+  if (n) toast('Seus quartos de hora chegaram da turma');
 }
 function aplicarAltsQts() {
   const cfg = store.get().config;
@@ -1115,6 +1137,7 @@ async function carregarTurma() {
   aplicarTrocas();
   aplicarQtsPublicados();
   aplicarAltsQts();
+  aplicarQuartosPublicados();
   atualizarBadge();
   if (ui.vista === 'turma' || ui.vista === 'painel') renderizar();
 }
@@ -1629,6 +1652,7 @@ async function abrirEscalaPublicada(id) {
   const e = ui.turma.escalas.find((x) => x.id === id);
   if (!e) return;
   ui.imp = { etapa: 'resultado', modo: 'importar', tipo: e.tipo, linhas: e.linhas || [], nomeArquivo: e.titulo, origem: 'turma' };
+  if (e.tipo === 'quartos') { ui.imp.quartos = { linhas: e.linhas || [], data: e.linhas?.[0]?.data || '' }; desenharImportar(); abrirFolha('#dlg-importar'); return; }
   if (e.tipo === 'qts' && e.linhas?.[0]?.dias) { ui.imp.qts = e.linhas[0]; desenharImportar(); abrirFolha('#dlg-importar'); return; }
   if (!['interna', 'rotina'].includes(e.tipo)) {
     EXT ||= await import('./escalasExtras.js');
@@ -1666,6 +1690,7 @@ function desenharImportar() {
     corpo.innerHTML = `<p class="erro">${esc(imp.erro)}</p><label class="btn" for="arquivo-pdf" style="text-align:center;cursor:pointer">Escolher outro PDF</label>`;
     return;
   }
+  if (imp.quartos) return desenharQuartos(imp, cfg, corpo);
   if (imp.qts) return desenharQtsImport(imp, corpo);
   if (imp.doc) return desenharDocumento(imp, cfg, corpo, nomes);
   // resultado
@@ -1694,6 +1719,63 @@ function desenharImportar() {
         <button class="btn pri" type="button" data-imp="adicionar">Adicionar à agenda</button>`}
     ${podePublicar ? '<button class="btn" type="button" data-imp="ir-publicar">Publicar esta escala para a turma</button>' : ''}
     <button class="btn link" type="button" data-imp="ver-todos">Ver a escala completa (todos)</button>`;
+}
+/* ---- Quartos de hora (texto do WhatsApp) ---- */
+function abrirQuartos(texto = '') {
+  const lido = lerQuartos(texto);
+  ui.imp = { modo: 'importar', etapa: 'resultado', tipo: 'quartos', origem: 'texto', quartos: { texto, data: dataProvavel(lido) } };
+  desenharImportar();
+  if (!$('#dlg-importar').open) abrirFolha('#dlg-importar');
+}
+/** Linhas atuais (do texto colado ou da escala publicada). */
+function linhasDosQuartos(imp) {
+  const q = imp.quartos;
+  if (imp.origem === 'turma') return (q.linhas || []).map((l) => ({ ...l, data: q.data || l.data }));
+  return linhasQuartos(lerQuartos(q.texto), q.data);
+}
+/** Missão de serviço que recebe os quartos: a do mesmo dia e função, ou uma nova. */
+function missaoDoQuarto(l) {
+  const subtipo = l.subtipo || 'sentinela_guarda';
+  const ms = store.get().missoes;
+  const existente = ms.find((m) => m.id === idEscala({ data: l.data, subtipo })) || ms.find((m) => m.subtipo === subtipo && ymdL(m.inicio) === l.data)
+    || ms.find((m) => SUBTIPOS_ESCALA.includes(m.subtipo) && m.subtipo !== 'sobreaviso' && ymdL(m.inicio) === l.data && !m.diaTodo);
+  if (existente) return { m: existente, nova: false };
+  const [m] = linhasParaMissoes([{ data: l.data, subtipo, funcao: '' }], { fardamento: store.get().config.fardamentoPadrao || '' });
+  return { m, nova: true };
+}
+function aplicarMeusQuartos(meus) {
+  let novas = 0, atual = 0;
+  for (const l of meus) {
+    const { m, nova } = missaoDoQuarto(l);
+    if (!m) continue;
+    const escala = { ...(m.escala || {}), posto: m.escala?.posto || l.secao, quartos: l.quartos };
+    if (nova) { store.salvarMissoes([{ ...m, escala }]); novas++; }
+    else if (m.escala?.quartos !== l.quartos) { store.salvarMissao({ id: m.id, escala }); atual++; }
+  }
+  return { novas, atual };
+}
+function desenharQuartos(imp, cfg, corpo) {
+  const q = imp.quartos;
+  const linhas = q.data ? linhasDosQuartos(imp) : [];
+  const meus = linhas.filter((l) => ehMeuNome(l.nome, cfg));
+  imp.linhas = linhas; imp.meus = meus;
+  const podePublicar = imp.origem !== 'turma' && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante');
+  const postos = agruparLinhas(linhas, (l) => l.secao || 'Guarda');
+  corpo.innerHTML = `${imp.origem === 'turma' ? `<div class="previa"><b>${esc(imp.nomeArquivo || 'Quartos de hora')}</b><span>Publicada na turma.</span></div>`
+      : `<p class="dica">Cole a mensagem do WhatsApp com os horários de cada um. O app acha o seu nome, põe os seus quartos no serviço e avisa 15 min antes de cada um.</p>
+      <div class="campo"><label class="lbl" for="iq-texto">Mensagem</label><textarea id="iq-texto" rows="6" placeholder="*GUARDA*
+Fonseca 19:00 às 20:40 / 00:00 às 01:50
+…">${esc(q.texto)}</textarea></div>`}
+    <div class="dupla"><div class="campo"><label class="lbl" for="iq-data">Dia do serviço (entrada)</label><input id="iq-data" type="date" value="${esc(q.data)}"></div>
+      <div class="campo"><label class="lbl" for="iq-nguerra">Seu nome de guerra</label><input id="iq-nguerra" value="${esc(cfg.nomeGuerra || '')}" placeholder="Como está na mensagem"></div></div>
+    ${postos.length ? `<div class="quartos-prev">${postos.map((g) => `<div class="secao"><span class="lbl">${esc(g.chave)}</span>${g.itens.map((l) => `<div class="func quarto${meus.includes(l) ? ' minha' : ''}"><b>${esc(l.nome)}</b><small>${esc(l.detalhe)}</small></div>`).join('')}</div>`).join('')}</div>`
+      : `<p class="erro">${imp.origem === 'turma' || q.texto.trim() ? 'Não encontrei linhas no formato “Nome 19:00 às 20:40 / 00:00 às 01:50”.' : 'Cole a mensagem acima.'}</p>`}
+    ${postos.length ? (meus.length ? `<span class="lbl">Seus horários</span><div class="imp-lista">${meus.map((l) => { const { m, nova } = missaoDoQuarto(l); return `<div class="imp-item"><span><b>${esc(l.secao)} · ${esc(l.detalhe)}</b><small>${m ? (nova ? `Cria ${esc(m.titulo)} de ${esc(rotuloDia(m.inicio).toLowerCase())}` : `Entra em ${esc(m.titulo)} de ${esc(rotuloDia(m.inicio).toLowerCase())}`) : ''}</small></span></div>`; }).join('')}</div>
+        <button class="btn pri" type="button" data-imp="quartos-salvar">Salvar meus horários</button>`
+      : `<p class="erro">${cfg.nomeGuerra ? 'Seu nome de guerra não está nesta mensagem.' : 'Preencha o seu nome de guerra para achar os seus horários.'}</p>${imp.origem === 'turma' ? '' : '<button class="btn" type="button" data-imp="quartos-salvar">Só guardar para consulta</button>'}`) : ''}
+    ${postos.length && podePublicar ? `<div class="campo"><label class="lbl" for="im-titulo">Título para a turma</label><input id="im-titulo" value="Quartos de hora · ${esc(q.data.split('-').reverse().slice(0, 2).join('/'))}"></div>
+      <button class="btn" type="button" data-imp="quartos-publicar">Publicar para a turma</button>
+      <p class="dica">Publicado, cada cadete escalado recebe os próprios quartos no serviço, com aviso antes de cada um.</p>` : ''}`;
 }
 function desenharQtsImport(imp, corpo) {
   const q = imp.qts;
@@ -1807,6 +1889,20 @@ $('#importar-corpo').addEventListener('change', (e) => {
   desenharImportar();
 });
 $('#importar-corpo').addEventListener('input', (e) => {
+  if (ui.imp?.quartos && ['iq-texto', 'iq-data', 'iq-nguerra'].includes(e.target.id)) {
+    const id = e.target.id, el0 = e.target, pos = el0.selectionStart;
+    if (id === 'iq-texto') ui.imp.quartos.texto = el0.value;
+    if (id === 'iq-data') ui.imp.quartos.data = el0.value;
+    clearTimeout(desenharQuartos.t);
+    desenharQuartos.t = setTimeout(() => {
+      if (id === 'iq-nguerra') store.setConfig({ nomeGuerra: $('#iq-nguerra').value.trim() });
+      if (id === 'iq-texto' && !ui.imp.quartos.data) ui.imp.quartos.data = dataProvavel(lerQuartos(ui.imp.quartos.texto));
+      if (id === 'iq-texto') { const d = lerQuartos(ui.imp.quartos.texto).data; if (d) ui.imp.quartos.data = d; }
+      desenharImportar();
+      const el = $('#' + id); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch (err) { /* date */ } }
+    }, id === 'iq-data' ? 0 : 400);
+    return;
+  }
   if (e.target.id !== 'im-ncompleto' && e.target.id !== 'im-nguerra') return;
   const nomes = { nomeCompleto: $('#im-ncompleto').value.trim(), nomeGuerra: $('#im-nguerra').value.trim() };
   clearTimeout(lerPdfEscolhido.t);
@@ -1848,6 +1944,23 @@ $('#importar-corpo').addEventListener('click', async (e) => {
     ui.todos = { doc: imp.docId, busca: '', data: '' };
     ui.vista = 'escalas'; ui.esc.todos = true; renderizar();
   }
+  if (b.dataset.imp === 'quartos-salvar') {
+    const { novas, atual } = aplicarMeusQuartos(imp.meus || []);
+    if (imp.origem !== 'turma' && imp.linhas?.length) imp.docId = guardarDocSinc({ tipo: 'quartos', titulo: `Quartos de hora · ${imp.quartos.data.split('-').reverse().slice(0, 2).join('/')}`, linhas: imp.linhas, numero: imp.quartos.data });
+    fecharFolha('#dlg-importar'); vibrar(25);
+    toast(imp.meus?.length ? `Seus quartos estão no serviço${novas ? ' (serviço criado)' : ''} · aviso 15 min antes` : 'Guardado para consulta');
+    if (!atual && !novas && imp.meus?.length) toast('Seus quartos já estavam no serviço');
+  }
+  if (b.dataset.imp === 'quartos-publicar') {
+    b.disabled = true;
+    try {
+      await nuvem.publicarEscala({ tipo: 'quartos', titulo: $('#im-titulo').value.trim() || 'Quartos de hora', linhas: imp.linhas.map(({ data, secao, subtipo, nome, detalhe, quartos }) => ({ data, secao, subtipo, nome, detalhe, quartos })) });
+      aplicarMeusQuartos(imp.meus || []);
+      guardarDocSinc({ tipo: 'quartos', titulo: `Quartos de hora · ${imp.quartos.data.split('-').reverse().slice(0, 2).join('/')}`, linhas: imp.linhas, numero: imp.quartos.data });
+      fecharFolha('#dlg-importar'); toast('Quartos publicados para a turma');
+      ui.turma.carregado = false; carregarTurma();
+    } catch (err) { b.disabled = false; toast(mensagemErro(err)); }
+  }
   if (b.dataset.imp === 'ir-publicar') { imp.modo = 'publicar'; desenharImportar(); }
   if (b.dataset.imp === 'publicar') {
     b.disabled = true;
@@ -1865,6 +1978,17 @@ $('#arquivo-pdf').addEventListener('change', (e) => {
   lerPdfEscolhido(f);
 });
 $('#rapido-pdf').addEventListener('click', () => { fecharFolha('#dlg-rapido'); abrirImportar('importar'); });
+$('#rapido-quartos').addEventListener('click', async () => {
+  let texto = '';
+  try { texto = await navigator.clipboard?.readText?.() || ''; } catch (e) { /* sem permissão: cola na caixa */ }
+  fecharFolha('#dlg-rapido'); abrirQuartos(ehTextoQuartos(texto) ? texto : '');
+  if (!ehTextoQuartos(texto)) setTimeout(() => $('#iq-texto')?.focus(), 200);
+});
+$('#rapido-txt').addEventListener('paste', (e) => {
+  const texto = e.clipboardData?.getData('text') || '';
+  if (!ehTextoQuartos(texto)) return;
+  e.preventDefault(); fecharFolha('#dlg-rapido'); abrirQuartos(texto);
+});
 
 /* ---- Trocas de serviço pelo app ----
  * Regras da EsFO conferidas pelo app (e pelo Firebase, nas regras de segurança):
@@ -2321,11 +2445,11 @@ async function verificarLembretes() {
   }
   // revista, geladeira (não vêm de missões)
   const { avisados } = store.get();
-  for (const x of [...lembretesExtras(store.get().config, agora - 6 * 3600000, agora), ...lembretesResumo(agora - 3 * 3600000, agora), ...lembretesLicenca(agora - 3 * 3600000, agora)]) {
+  for (const x of [...lembretesExtras(store.get().config, agora - 6 * 3600000, agora), ...lembretesResumo(agora - 3 * 3600000, agora), ...lembretesLicenca(agora - 3 * 3600000, agora), ...lembretesQuartos(itensNoIntervalo(agora - 2 * DIA, agora + DIA), agora - 40 * 60000, agora)]) {
     if (avisados[x.tag]) continue;
     let mostrou = false;
     if ('Notification' in window && Notification.permission === 'granted') {
-      try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) { await reg.showNotification(x.titulo, { body: x.corpo, tag: x.tag, icon: 'icon-192.png', badge: 'icon-192.png', data: { chave: x.chave }, silent: emServicoAgora(agora).length > 0 }); mostrou = true; } } catch (e) { /* aviso interno */ }
+      try { const reg = await navigator.serviceWorker?.getRegistration(); if (reg) { await reg.showNotification(x.titulo, { body: x.corpo, tag: x.tag, icon: 'icon-192.png', badge: 'icon-192.png', data: { chave: x.chave }, silent: !x.critico && emServicoAgora(agora).length > 0, requireInteraction: !!x.critico }); mostrou = true; } } catch (e) { /* aviso interno */ }
     }
     if (!mostrou && document.visibilityState === 'visible') toast(`${x.titulo}`);
     store.marcarAvisado(x.tag);
@@ -2417,6 +2541,7 @@ function proximosLembretes() {
   for (const x of lembretesExtras(store.get().config, agora + 60000, ate)) out.push(x);
   for (const x of lembretesResumo(agora + 60000, ate)) out.push(x);
   for (const x of lembretesLicenca(agora + 60000, ate)) out.push(x);
+  for (const x of lembretesQuartos(itensNoIntervalo(agora - 2 * DIA, ate), agora + 60000, ate)) out.push(x);
   return out.sort((a, b) => a.dispara - b.dispara);
 }
 
@@ -2431,6 +2556,12 @@ async function abrirPdfCompartilhado() {
   history.replaceState(null, '', location.pathname + location.hash);
   try {
     const cache = await caches.open('compartilhado');
+    const txt = await cache.match('./__compartilhado.txt');
+    if (txt) {
+      const texto = await txt.text(); await cache.delete('./__compartilhado.txt');
+      if (ehTextoQuartos(texto)) return abrirQuartos(texto);
+      ui.vista = 'painel'; renderizar(); abrirFolha('#dlg-rapido'); $('#rapido-txt').value = texto.replace(/\s+/g, ' ').trim(); atualizarRapido(); return;
+    }
     const res = await cache.match('./__compartilhado.pdf');
     if (!res) return toast('Não recebi o PDF compartilhado. Tente de novo.');
     const nome = decodeURIComponent(res.headers.get('X-Nome') || 'escala.pdf');

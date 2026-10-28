@@ -8,7 +8,7 @@
  *
  * Ao publicar uma nova versão, altere VERSAO para forçar a atualização.
  */
-const VERSAO = 'agenda-cadete-v2.11.0';
+const VERSAO = 'agenda-cadete-v2.12.0';
 const ARQUIVOS = [
   './',
   './index.html',
@@ -32,7 +32,7 @@ const ARQUIVOS = [
   './escalaPdf.js',
   './escalasExtras.js',
   './rotina.js',
-  './qts.js',
+  './qts.js', './quartos.js',
   './documentos.js',
   './cruzamentos.js',
   './brasao-apmg.png',
@@ -68,6 +68,11 @@ self.addEventListener('fetch', (e) => {
       try {
         const dados = await req.formData();
         const arq = dados.getAll('pdf').find((f) => f && f.size);
+        const texto = [dados.get('title'), dados.get('text')].filter((x) => typeof x === 'string' && x.trim()).join('\n');
+        if (!arq && texto) {
+          const cache = await caches.open('compartilhado');
+          await cache.put('./__compartilhado.txt', new Response(texto, { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }));
+        }
         if (arq) {
           const cache = await caches.open('compartilhado');
           await cache.put('./__compartilhado.pdf', new Response(arq, { headers: { 'Content-Type': 'application/pdf', 'X-Nome': encodeURIComponent(arq.name || 'escala.pdf') } }));

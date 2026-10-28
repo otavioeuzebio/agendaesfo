@@ -452,3 +452,11 @@ b.alerta { color: var(--p-importante); }
 .formatura .lbl { color: var(--gold); }
 .formatura small { opacity: .8; }
 .formatura .barra-ha { background: color-mix(in srgb, var(--on-navy) 20%, transparent); }
+
+/* quartos de hora */
+.func.quarto { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.quartos-prev { display: grid; gap: 10px; }
+.quartos-prev .secao { gap: 4px; }
+.quartos-prev .func.quarto { padding: 6px 10px; border-radius: 10px; background: var(--surface-2, rgba(127,127,127,.08)); }
+.quartos-prev .func.quarto small { font-variant-numeric: tabular-nums; opacity: .85; }
+#iq-texto { width: 100%; font: inherit; font-size: .9rem; resize: vertical; }
