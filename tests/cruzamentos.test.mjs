@@ -59,3 +59,35 @@ test('texto do resumo da noite', () => {
   assert.equal(r.titulo, 'Amanhã (qua 28/10): 1 compromisso, 1 aula');
   assert.match(r.corpo, /Aulas: APHP 07:30 · Sentinela da Guarda 19:00 – Corpo da Guarda · Revista 06:00 · Separou/);
 });
+
+test('fardamento: gandola seg/ter, combat shirt no resto; DAG branca qua–sex', async () => {
+  const { fardamentoDoDia } = await import('../cruzamentos.js');
+  const d = (dia) => new Date(2026, 9, dia, 12).getTime(); // 26/10 = segunda
+  assert.deepEqual([26, 27, 28, 29, 30, 31, 25].map((x) => [fardamentoDoDia(d(x)).farda.includes('gandola') ? 'G' : 'C', fardamentoDoDia(d(x)).dag.includes('branca') ? 'B' : 'P']),
+    [['G', 'P'], ['G', 'P'], ['C', 'B'], ['C', 'B'], ['C', 'B'], ['C', 'P'], ['C', 'P']]);
+  const f = fardamentoDoDia(d(29), { itens: [{ titulo: 'Sentinela', subtipo: 'sentinela_guarda', inicio: d(29) + 7 * 3600000, escala: {} }], aulas: [{ sigla: 'EFM II', ini: '07:30' }], fardamentoPadrao: '4º A' });
+  assert.deepEqual(f.extras.map((x) => x.texto), ['EFM às 07:30: levar o uniforme de educação física', 'Sentinela: 4º A']);
+});
+
+test('licença: saída sexta, retorno domingo, bloqueada por serviço ou LC', async () => {
+  const { licencaDoFimDeSemana } = await import('../cruzamentos.js');
+  const qua = new Date(2026, 9, 28, 10).getTime();
+  const l = licencaDoFimDeSemana([], {}, qua);
+  assert.deepEqual([new Date(l.saida).getDate(), new Date(l.saida).getHours(), new Date(l.retorno).getDate(), new Date(l.retorno).getHours(), l.livre], [30, 18, 1, 19, true]);
+  const sab = new Date(2026, 9, 31, 7).getTime();
+  const b = licencaDoFimDeSemana([{ titulo: 'MCE – Licença Cassada 3', subtipo: 'mce', inicio: sab + 12 * 3600000, fim: sab + 24 * 3600000 }, { titulo: 'Sentinela', subtipo: 'sentinela_guarda', inicio: sab, fim: sab + 24 * 3600000 }], {}, qua);
+  assert.equal(b.livre, false);
+  assert.equal(b.bloqueios.length, 2);
+  // no domingo depois do retorno, já mostra o próximo fim de semana
+  const seg = new Date(2026, 10, 1, 20).getTime();
+  assert.equal(new Date(licencaDoFimDeSemana([], {}, seg).saida).getDate(), 6);
+});
+
+test('equilíbrio na turma pela escala completa', async () => {
+  const { equilibrioTurma } = await import('../cruzamentos.js');
+  const e = equilibrioTurma(docs, cfg, 2026, 9);
+  assert.equal(e.meu, 1);
+  assert.equal(e.n, 6);
+  assert.equal(e.max, 2);
+  assert.equal(equilibrioTurma(docs, cfg, 2026, 11), null);
+});

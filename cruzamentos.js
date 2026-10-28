@@ -146,7 +146,7 @@ export function opcoesDisciplina(semanas = [], cap = (t) => t) {
  * { rotuloDia, itens: [{ hora, titulo, local }], aulas: [{ ini, sigla, local }], revista, alimentos: [nome], pendencias: [texto] }
  * Devolve null quando não há nada para o dia.
  */
-export function textoResumo({ rotuloDia, itens = [], aulas = [], revista = '', alimentos = [], pendencias = [] }) {
+export function textoResumo({ rotuloDia, itens = [], aulas = [], revista = '', alimentos = [], pendencias = [], farda = '' }) {
   const partes = [];
   if (aulas.length) partes.push('Aulas: ' + aulas.map((a) => `${a.sigla} ${a.ini}${a.local ? ' (' + a.local + ')' : ''}`).join(', '));
   if (itens.length) partes.push(itens.map((i) => `${i.titulo}${i.hora ? ' ' + i.hora : ''}${i.local ? ' – ' + i.local : ''}`).join('; '));
@@ -154,5 +154,85 @@ export function textoResumo({ rotuloDia, itens = [], aulas = [], revista = '', a
   if (alimentos.length) partes.push('Geladeira: ' + alimentos.join(', '));
   if (pendencias.length) partes.push(pendencias.join(' '));
   if (!partes.length) return null;
+  if (farda) partes.push(farda);
   return { titulo: `${rotuloDia}: ${itens.length ? itens.length + ' compromisso' + (itens.length > 1 ? 's' : '') : 'sem compromissos'}${aulas.length ? ', ' + aulas.length + ' aula' + (aulas.length > 1 ? 's' : '') : ''}`, corpo: partes.join(' · ') };
+}
+
+/* ------------------------------ fardamento do dia ------------------------------ */
+/**
+ * Regra da EsFO (informada pelo cadete):
+ *   farda: seg e ter = fardamento orgânico com gandola; demais dias = fardamento orgânico com combat shirt
+ *   agasalho DAG: qua, qui e sex = camiseta branca; demais dias = camiseta preta
+ */
+export const FARDA_SEMANA = ['Fardamento orgânico com combat shirt', 'Fardamento orgânico com gandola', 'Fardamento orgânico com gandola',
+  'Fardamento orgânico com combat shirt', 'Fardamento orgânico com combat shirt', 'Fardamento orgânico com combat shirt', 'Fardamento orgânico com combat shirt'];
+export const DAG_SEMANA = ['Camiseta preta', 'Camiseta preta', 'Camiseta preta', 'Camiseta branca', 'Camiseta branca', 'Camiseta branca', 'Camiseta preta'];
+/**
+ * Fardamento do dia. `extras`: [{ quando, texto }] vindos de serviços/representações (fardamento próprio)
+ * e de aulas de EFM. Devolve { farda, dag, extras }.
+ */
+export function fardamentoDoDia(dia, { itens = [], aulas = [], fardamentoPadrao = '' } = {}) {
+  const dow = new Date(dia).getDay();
+  const extras = [];
+  for (const i of itens) {
+    const f = (i.escala?.fardamento || (['sentinela_guarda', 'sentinela_posto2', 'cmt_guarda', 'estagio_cpu', 'guarda'].includes(i.subtipo) ? fardamentoPadrao : '') || '').trim();
+    if (f) extras.push({ quando: i.inicio, texto: `${i.titulo}: ${f}` });
+  }
+  const efm = aulas.find((a) => /^EFM/i.test(siglaBase(a.sigla)));
+  if (efm) extras.push({ quando: new Date(`${ymd(dia)}T${efm.ini}:00`).getTime(), texto: `EFM às ${efm.ini}: levar o uniforme de educação física` });
+  return { farda: FARDA_SEMANA[dow], dag: DAG_SEMANA[dow], extras: extras.sort((a, b) => a.quando - b.quando) };
+}
+
+/* ------------------------------ licença do fim de semana ------------------------------ */
+export const LICENCA_PADRAO = { saidaDia: 5, saidaHora: '18:00', retornoDia: 0, retornoHora: '19:00' };
+const DIAS = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'];
+/**
+ * Licença do fim de semana que contém (ou vem depois de) `agora`.
+ * itens: compromissos pendentes { titulo, subtipo, inicio, fim, detalhe }.
+ * Devolve { saida, retorno, bloqueios: [texto], livre } ou null quando desligado.
+ */
+export function licencaDoFimDeSemana(itens, cfgLic = {}, agora = Date.now()) {
+  const c = { ...LICENCA_PADRAO, ...cfgLic };
+  if (c.ativo === false) return null;
+  const hoje = new Date(agora);
+  // sexta-feira (dia de saída) desta semana; se a licença já acabou, a da próxima
+  const base = new Date(hoje.getFullYear(), hoje.getMonth(), hoje.getDate() - ((hoje.getDay() - c.saidaDia + 7) % 7));
+  const em = (d, hhmm) => { const [h, m] = hhmm.split(':').map(Number); const x = new Date(d); x.setHours(h, m, 0, 0); return x.getTime(); };
+  let saida = em(base, c.saidaHora);
+  let retorno = em(new Date(base.getFullYear(), base.getMonth(), base.getDate() + ((c.retornoDia - c.saidaDia + 7) % 7 || 7)), c.retornoHora);
+  if (retorno < agora) { saida += 7 * DIA; retorno += 7 * DIA; }
+  const bloqueios = [];
+  for (const i of itens) {
+    const fim = i.fim || i.inicio + HORA;
+    if (i.inicio >= retorno || fim <= saida) continue;
+    const quando = `${DIAS[new Date(i.inicio).getDay()]} ${p2(new Date(i.inicio).getHours())}h${p2(new Date(i.inicio).getMinutes()) === '00' ? '' : p2(new Date(i.inicio).getMinutes())}`;
+    if (i.subtipo === 'sobreaviso') bloqueios.push(`Sobreaviso (${quando}): fique em local de fácil acionamento`);
+    else if (i.subtipo === 'mce' || (SUBTIPOS_ESCALA.includes(i.subtipo))) bloqueios.push(`${i.titulo} (${quando})`);
+  }
+  return { saida, retorno, bloqueios, livre: !bloqueios.length };
+}
+
+/* ------------------------------ equilíbrio na turma ------------------------------ */
+/**
+ * Seus serviços no mês × a sua turma (mesma graduação), pela escala completa.
+ * Devolve { meu, media, min, max, n, posicao } ou null sem escala com o seu nome.
+ */
+export function equilibrioTurma(docs, cfg, ano, mes) {
+  const pref = `${ano}-${p2(mes + 1)}`;
+  const doc = docs.filter((d) => d.tipo === 'interna' && d.linhas.some((l) => l.data?.startsWith(pref)))
+    .sort((a, b) => (b.importadoEm || 0) - (a.importadoEm || 0))[0];
+  if (!doc) return null;
+  const minha = doc.linhas.find((l) => ehMeu(l.nome, cfg));
+  if (!minha) return null;
+  const cont = new Map();
+  for (const l of doc.linhas) {
+    if (l.grad !== minha.grad) continue;
+    const k = normalizar(l.nome);
+    if (!cont.has(k)) cont.set(k, 0);
+    if (l.data?.startsWith(pref) && l.subtipo !== 'sobreaviso') cont.set(k, cont.get(k) + 1);
+  }
+  const vals = [...cont.values()];
+  const meu = cont.get(normalizar(minha.nome)) || 0;
+  const ordem = [...vals].sort((a, b) => b - a);
+  return { meu, media: vals.reduce((a, b) => a + b, 0) / vals.length, min: Math.min(...vals), max: Math.max(...vals), n: vals.length, posicao: ordem.indexOf(meu) + 1, grad: minha.grad };
 }

@@ -17,7 +17,7 @@ import { listarAcessos, definirAcesso, removerAcesso, mensagemErro, definirPapel
 import { itensNoIntervalo, proximoCritico, atrasadas, plantoesDoCiclo, lembretesVencidos, fimEfetivo, proximas } from './agenda.js';
 import { checklistPadrao, pendentesChecklist, relatorioHoras, textoRelatorio, mediasAcademicas, mediaGeral, SUBTIPOS_AVALIACAO, linhasParaMissoes, avisoVespera, quadroDoPosto, SERVICOS_ARMADOS } from './extras.js';
 import * as nuvem from './nuvem.js';
-import { colegasNaEscala, livresParaTroca, casaColega, conflitos as conflitosAgenda, resumoFaltas, chaveAula, LIMITE_FALTAS_PADRAO, discDaSigla, opcoesDisciplina, textoResumo } from './cruzamentos.js';
+import { fardamentoDoDia, licencaDoFimDeSemana, LICENCA_PADRAO, equilibrioTurma, colegasNaEscala, livresParaTroca, casaColega, conflitos as conflitosAgenda, resumoFaltas, chaveAula, LIMITE_FALTAS_PADRAO, discDaSigla, opcoesDisciplina, textoResumo } from './cruzamentos.js';
 import { listarDocs, guardarDoc, apagarDoc, ehMeu, filtrar, agrupar as agruparLinhas, datasDoDoc, TIPOS_CONSULTA } from './documentos.js';
 import { ehQts, lerQts, blocosDoDia, aulaAgora, guardarSemana, semanaDoDia, siglaBase, ehIndisponivel, editarAulas, restaurarAulas } from './qts.js';
 import { configRevista, diaDeRevista, revistaDoDia, situacaoAlimento, ROTULO_ALIMENTO, alimentosEmAlerta, lembretesExtras, relatoriosACriar, PRAZO_RELATORIO_PADRAO, ymd as ymdR } from './rotina.js';
@@ -253,6 +253,22 @@ function renderTodos(agora) {
 }
 
 /* ---- QTS (Quadro de Trabalho Semanal) ---- */
+/** Alterações do QTS publicadas na turma: entram no QTS de quem tem a mesma semana e o mesmo pelotão. */
+function aplicarAltsQts() {
+  const cfg = store.get().config;
+  const feitas = new Set(cfg.qtsAltAplicadas || []);
+  let qts = cfg.qts || [], novas = [];
+  for (const e of (ui.turma.escalas || []).filter((x) => x.tipo === 'qts-alt' && !feitas.has(x.id)).sort((a, b) => (a.criadoEm?.toMillis?.() || 0) - (b.criadoEm?.toMillis?.() || 0))) {
+    const l = e.linhas?.[0]; if (!l) continue;
+    const sem = qts.find((x) => x.id === l.semId && x.turma === l.qtsTurma);
+    if (!sem) continue; // ainda não importou esta semana: aplica quando importar
+    qts = editarAulas(qts, l.semId, l.dia, l.ns, { ...l.mudanca, nota: [l.mudanca.nota, 'publicado na turma'].filter(Boolean).join(' · ') });
+    novas.push(e.id);
+  }
+  if (!novas.length) return;
+  store.setConfig({ qts, qtsAltAplicadas: [...feitas, ...novas].slice(-300) });
+  toast(novas.length === 1 ? 'O QTS foi alterado pela turma' : `${novas.length} alterações do QTS recebidas da turma`);
+}
 /** Abre o editor de aulas do dia (de uma faixa de aulas ou do dia inteiro). */
 function abrirEdicaoQts(dia, primeira, ultima) {
   const sems = store.get().config.qts || [];
@@ -286,6 +302,7 @@ function desenharEdicaoQts() {
       <div class="campo"><label class="lbl" for="eq-inst">Instrutor</label><input id="eq-inst" value="${esc(e.instrutor)}"></div></div>` : ''}
     ${e.sel.length === 1 ? `<div class="dupla"><div class="campo"><label class="lbl" for="eq-ini">Início</label><input id="eq-ini" type="time" value="${esc(e.ini)}"></div><div class="campo"><label class="lbl" for="eq-fim">Fim</label><input id="eq-fim" type="time" value="${esc(e.fim)}"></div></div>` : ''}
     <div class="campo"><label class="lbl" for="eq-nota">Motivo / observação</label><input id="eq-nota" value="${esc(e.nota)}" placeholder="Ex.: aula antecipada, instrutor em missão"></div>
+    ${temNuvem() && ui.conta && (ui.conta.admin || ui.conta.papel === 'escalante') ? `<label class="linha"><input type="checkbox" id="eq-pub" ${e.publicar ? 'checked' : ''}> <span>Publicar para a turma (${esc(sem.turma || 'este pelotão')})</span></label>` : ''}
     <button class="btn pri" type="button" data-eq="salvar" ${e.sel.length ? '' : 'disabled'}>${e.sel.length ? `Salvar ${e.sel.length} aula${e.sel.length > 1 ? 's' : ''}` : 'Escolha as aulas'}</button>
     ${algumaAlterada ? '<button class="btn" type="button" data-eq="restaurar">Voltar ao que veio no PDF</button>' : ''}
     <p class="dica">A mudança vale só para você (e seus aparelhos). Se importar de novo o PDF da mesma semana, as aulas alteradas aqui continuam como você deixou.</p>`;
@@ -300,6 +317,7 @@ function lerCamposEdQts() {
   if (v('eq-fim') != null) e.fim = v('eq-fim');
   if (v('eq-nsig') != null) e.novaSig = v('eq-nsig');
   if (v('eq-nnome') != null) e.novoNome = v('eq-nnome');
+  if ($('#eq-pub')) e.publicar = $('#eq-pub').checked;
 }
 $('#qts-ed-corpo').addEventListener('change', (ev) => {
   if (ev.target.id !== 'eq-sig') return;
@@ -327,8 +345,17 @@ $('#qts-ed-corpo').addEventListener('click', (ev) => {
     if (!sigla) { toast('Informe a sigla da disciplina'); return; }
   }
   if (e.sel.length === 1 && e.ini && e.fim && e.fim <= e.ini) { toast('O fim precisa ser depois do início'); return; }
-  store.setConfig({ qts: editarAulas(sems, e.semId, e.dia, e.sel, { sigla, nome: nome || sigla, local: e.local, instrutor: e.instrutor, nota: e.nota, ini: e.ini, fim: e.fim }) });
+  const mudanca = { sigla, nome: nome || sigla, local: e.local, instrutor: e.instrutor, nota: e.nota, ini: e.ini, fim: e.fim };
+  store.setConfig({ qts: editarAulas(sems, e.semId, e.dia, e.sel, mudanca) });
   fecharFolha('#dlg-qts'); vibrar(20); toast(`${e.sel.length} aula${e.sel.length > 1 ? 's' : ''} alterada${e.sel.length > 1 ? 's' : ''}`);
+  if (e.publicar) {
+    const sem = sems.find((s) => s.id === e.semId);
+    const d = sem.dias.find((x) => x.data === e.dia);
+    const desc = `${DIAS_CURTOS[d.dow]} ${ddmm(new Date(e.dia + 'T12:00').getTime())}, ${e.sel.map((n) => n + 'ª').join(', ')} aula${e.sel.length > 1 ? 's' : ''}: ${sigla || 'sem aula'}${e.local ? ' (' + e.local + ')' : ''}`;
+    nuvem.publicarEscala({ tipo: 'qts-alt', titulo: `QTS alterado · ${desc}`, linhas: [{ semId: e.semId, qtsTurma: sem.turma, semana: sem.semana, dia: e.dia, ns: e.sel, mudanca }] })
+      .then(() => { toast('Alteração publicada para a turma'); ui.turma.carregado = false; carregarTurma(); })
+      .catch((err) => toast('Não publicou: ' + mensagemErro(err)));
+  }
 });
 function faltasDoBloco(dia, b) {
   const f = store.get().config.faltas || {};
@@ -440,6 +467,48 @@ function renderQts(agora) {
   </div>`;
 }
 
+/** Fardamento do dia (regra da semana + fardamento de serviço/representação + EFM). */
+function fardaDoDia(diaMs) {
+  const cfg = store.get().config;
+  const d0 = inicioDoDia(diaMs).getTime();
+  const itens = itensNoIntervalo(d0, d0 + DIA).filter((i) => i.status === 'pendente' && i.inicio >= d0 && i.inicio < d0 + DIA);
+  const sem = semanaDoDia(cfg.qts || [], ymdL(d0));
+  const aulas = sem?.dias.find((x) => x.data === ymdL(d0))?.aulas.filter((a) => a.sigla && !ehIndisponivel(a.sigla)) || [];
+  return fardamentoDoDia(d0, { itens, aulas, fardamentoPadrao: cfg.fardamentoPadrao || '' });
+}
+function cartaoFarda(dia, agora) {
+  const f = fardaDoDia(dia.getTime());
+  return `<div class="farda"><span class="lbl">Fardamento · ${esc(rotuloDia(dia.getTime(), agora))}</span>
+    <div><b>${esc(f.farda)}</b><span>Agasalho DAG: ${esc(f.dag.toLowerCase())}</span></div>
+    ${f.extras.map((x) => `<small>${esc(x.texto)}</small>`).join('')}</div>`;
+}
+/** Licença do fim de semana: aparece de quinta até o retorno. */
+function cartaoLicenca(agora) {
+  const cfg = store.get().config;
+  const itens = itensNoIntervalo(agora - DIA, agora + 9 * DIA).filter((i) => i.status === 'pendente').map((i) => ({ ...i, fim: fimEfetivo(i) }));
+  const l = licencaDoFimDeSemana(itens, cfg.licenca, agora);
+  if (!l || l.saida - agora > 2 * DIA + 6 * 3600000) return '';
+  const quando = (ms) => `${DIAS_CURTOS[new Date(ms).getDay()].toLowerCase()} ${ddmm(ms)} ${hhmm(ms)}`;
+  const fora = agora >= l.saida;
+  return `<div class="licenca${l.livre ? '' : ' presa'}"><span class="lbl">Licença do fim de semana</span>
+    ${l.livre ? `<b>${fora ? `Retorno até ${quando(l.retorno)}` : `Saída ${quando(l.saida)} · retorno ${quando(l.retorno)}`}</b>${fora ? `<small>faltam <span data-cd-fim="${l.retorno}">${contagem(l.retorno - agora)}</span></small>` : ''}`
+      : `<b>Com compromisso no fim de semana</b>${l.bloqueios.map((b) => `<small>${esc(b)}</small>`).join('')}<small>Retorno (se sair): ${quando(l.retorno)}</small>`}
+  </div>`;
+}
+function lembretesLicenca(de, ate) {
+  const cfg = store.get().config;
+  if (cfg.licenca?.ativo === false) return [];
+  const itens = itensNoIntervalo(de - DIA, ate + 9 * DIA).filter((i) => i.status === 'pendente').map((i) => ({ ...i, fim: fimEfetivo(i) }));
+  const out = [];
+  for (let t = de; t <= ate + DIA; t += 7 * DIA) {
+    const l = licencaDoFimDeSemana(itens, cfg.licenca, t);
+    if (!l) break;
+    const dispara = l.retorno - 3 * 3600000;
+    if (dispara >= de && dispara <= ate && !out.some((x) => x.dispara === dispara)) out.push({ dispara, titulo: `Retorno à APMG até ${hhmm(l.retorno)}`, corpo: `${DIAS_CURTOS[new Date(l.retorno).getDay()]} ${ddmm(l.retorno)} · confira farda e material para a semana.`, chave: 'licenca', tag: `licenca:${ymdL(l.retorno)}`, critico: false });
+  }
+  return out;
+}
+
 /** Revista matinal no painel: aparece nos dias de revista, até 12h, enquanto não estiver pronta. */
 function cartaoRevista(agora) {
   const cfg = store.get().config;
@@ -533,6 +602,7 @@ function renderPainel(agora) {
     ${servicos.map((i) => cartaoEmServico(i, agora)).join('')}
     ${cartaoAula(agora)}
     ${cartaoRevista(agora)}
+    ${cartaoLicenca(agora)}
     ${avisos.join('')}
     <div class="resumo">
       <div><b class="num">${pend.length}</b><span>pendentes ${mesmoDia(dia, hoje) ? 'hoje' : esc(rotuloDia(dia.getTime(), agora).toLowerCase())}</span></div>
@@ -545,6 +615,7 @@ function renderPainel(agora) {
         <span>${mesmoDia(d, hoje) ? 'HOJE' : DIAS_CURTOS[d.getDay()].toUpperCase()}</span><b class="num">${d.getDate()}</b>
         ${servicoNaSemana.has(paraData(d.getTime())) ? '<i class="pt" title="Dia de serviço"></i>' : '<i class="pt" style="visibility:hidden"></i>'}</button>`).join('')}
     </div>
+    ${cartaoFarda(dia, agora)}
     <div class="secao"><h2 class="lbl">Linha do tempo · ${esc(rotuloDia(dia.getTime(), agora))}</h2>${linha}</div>
   </div>`;
 }
@@ -656,6 +727,13 @@ function renderHoras(agora) {
         <div><b class="num">${h(rel.equilibrio.mediaFolga)}</b><span>horas de folga em média</span></div>
       </div>
       <p class="dica">Menor folga entre dois serviços: <b>${h(rel.equilibrio.menorFolga)} h</b>${rel.equilibrio.seguidos ? ` · <span style="color:var(--danger)">${rel.equilibrio.seguidos} vez${rel.equilibrio.seguidos > 1 ? 'es' : ''} com menos de 24 h de folga</span>` : ' · nenhuma folga menor que 24 h'}.${anterior ? ` Mês anterior: ${anterior.total.qtd} serviços (${h(anterior.total.horas)} h).` : ''}</p></div>` : ''}
+    ${r.modo === 'mes' ? (() => { const eq = equilibrioTurma(listarDocs(ui.conta?.uid), store.get().config, ano, mes); if (!eq) return '';
+      const cor = eq.meu > eq.media + 1 ? 'var(--danger)' : eq.meu < eq.media - 1 ? 'var(--ok)' : 'var(--fg)';
+      return `<div class="secao"><h2 class="lbl">Você na turma <small>escala completa · todos os ${esc(eq.grad)} · ${eq.n} cadetes</small></h2>
+        <div class="cartoes-n"><div><b class="num" style="color:${cor}">${eq.meu}</b><span>seus serviços</span></div>
+          <div><b class="num">${h(eq.media)}</b><span>média da turma</span></div>
+          <div><b class="num">${eq.min}–${eq.max}</b><span>menor e maior</span></div></div>
+        <p class="dica">Pela escala do mês (sem contar sobreaviso). Você é o ${eq.posicao}º mais escalado${eq.meu > eq.media + 1 ? ' — acima da média, vale conversar com o escalante ou priorizar trocas' : eq.meu < eq.media - 1 ? ' — abaixo da média' : ' — dentro da média'}.</p></div>`; })() : ''}
     <p class="dica">Conta os serviços já terminados (ou marcados como cumpridos), exceto os trocados/dispensados. ${rel.rotina.qtd ? `Missões de rotina: <b>${rel.rotina.qtd}</b>. ` : ''}${futuros ? `Ainda previstos no período: <b>${futuros}</b>.` : ''}</p>
     ${rel.total.qtd || rel.sobreaviso.qtd ? '<button class="btn pri" type="button" data-acao="compartilhar-rel">Compartilhar relatório</button>' : ''}
   </div>`;
@@ -730,6 +808,16 @@ function renderRotina(agora) {
       ${(() => { const r = resumoDoDia(ymdR(agora + DIA)); return r ? `<p class="dica"><b>Prévia:</b> ${esc(r.titulo)} — ${esc(r.corpo)}</p>` : '<p class="dica">Prévia: nada para amanhã ainda.</p>'; })()}
     </div>
 
+    <div class="ajuste"><h3>Licença do fim de semana</h3>
+      <p>Cartão no Painel de quinta até o retorno (avisa se houver serviço, MCE ou LC no fim de semana) e aviso 3 h antes do retorno.</p>
+      ${(() => { const l = { ...LICENCA_PADRAO, ...(cfg.licenca || {}) }; const dia = (id, v) => `<select id="${id}">${DIAS_CURTOS.map((d, i) => `<option value="${i}"${i === +v ? ' selected' : ''}>${d}</option>`).join('')}</select>`;
+        return `<label class="linha"><input type="checkbox" id="lc-ativo" ${l.ativo === false ? '' : 'checked'}> <span>Ligado</span></label>
+        <div class="dupla"><div class="campo"><span class="lbl">Saída</span><div class="linha">${dia('lc-sdia', l.saidaDia)}<input id="lc-shora" type="time" value="${esc(l.saidaHora)}"></div></div>
+          <div class="campo"><span class="lbl">Retorno</span><div class="linha">${dia('lc-rdia', l.retornoDia)}<input id="lc-rhora" type="time" value="${esc(l.retornoHora)}"></div></div></div>`; })()}
+      <button class="btn pri" type="button" data-acao="lc-salvar">Salvar licença</button>
+      <p class="dica">Ajuste para os horários que valem na EsFO.</p>
+    </div>
+
     <div class="ajuste"><h3>Geladeira</h3>
       <p>Avisa na véspera e no dia do vencimento, e na quinta-feira (conferência da Copa) lista o que é seu.</p>
       <div class="dupla"><div class="campo"><label class="lbl" for="gl-item">Alimento</label><input id="gl-item" placeholder="Ex.: iogurte"></div>
@@ -761,14 +849,19 @@ function aplicarRelatorios() {
 function blocoDisciplina(config) {
   const regs = [...(config.disciplina || [])].sort((a, b) => (b.data || '').localeCompare(a.data || ''));
   const pos = regs.filter((r) => r.tipo === 'FO+').length, neg = regs.length - pos;
-  const mces = regs.reduce((n, r) => n + (r.mce && !/anulad|transferid|justificad|duplicad/i.test(r.mce) ? r.mce.split('+').length : 0), 0);
+  const missoesMce = store.get().missoes.filter((m) => m.subtipo === 'mce' && m.id.startsWith('doc-mce-') && m.status !== 'pulado');
+  const mceDoRegistro = (r) => { const num = (r.doc.match(/NAMCE\s+(.*)/) || [])[1]; if (!num || !r.mce) return [];
+    const cods = r.mce.split('+').map((c) => c.toLowerCase().replace(/[^a-z0-9]/g, '')); const pref = `doc-mce-${num.replace(/[^0-9a-z]/gi, '').toLowerCase()}-`;
+    return missoesMce.filter((m) => m.id.startsWith(pref) && cods.includes(m.id.slice(pref.length))); };
+  const mcePagas = { total: missoesMce.length, feitas: missoesMce.filter((m) => m.status === 'concluida').length };
   return `<div class="secao"><h2 class="lbl">Disciplina</h2>
     ${regs.length ? `<div class="cartoes-n">
       <div><b class="num" style="color:var(--ok)">${pos}</b><span>FO+</span></div>
       <div><b class="num" style="color:${neg ? 'var(--danger)' : 'var(--muted)'}">${neg}</b><span>AAD</span></div>
-      <div><b class="num">${mces}</b><span>MCE aplicadas</span></div></div>
+      <div><b class="num">${mcePagas.feitas}/${mcePagas.total}</b><span>MCE cumpridas</span></div></div>
       <div class="imp-lista">${regs.map((r) => `<div class="imp-item anot ${r.tipo === 'FO+' ? 'pos' : 'neg'}"><span><b>${esc(r.tipo)} · ${esc((r.data || '').split('-').reverse().join('/'))}</b> ${esc(r.texto)}
-        <small>${esc(r.doc)}${r.anotador ? ' · ' + esc(r.anotador) : ''}${r.mce ? ' · MCE: ' + esc(r.mce) : ''}</small></span>
+        <small>${esc(r.doc)}${r.anotador ? ' · ' + esc(r.anotador) : ''}${r.mce && !mceDoRegistro(r).length ? ' · MCE: ' + esc(r.mce) : ''}</small>
+        ${mceDoRegistro(r).length ? `<span class="mce-st">${mceDoRegistro(r).map((m) => `<button type="button" class="chip peq${m.status === 'concluida' ? ' feito' : ''}" data-check="${esc(m.id)}" aria-pressed="${m.status === 'concluida'}">${esc(m.detalhe || m.titulo)} · ${m.status === 'concluida' ? 'cumprida ✓' : 'pendente'}</button>`).join('')}</span>` : ''}</span>
         <button class="btn link" type="button" data-disc-rm="${esc(r.id)}" aria-label="Remover">${svgLixo}</button></div>`).join('')}</div>`
       : '<div class="vazio">Importe a Planilha de Anotados ou a NAMCE (botão dourado › PDF) para guardar aqui seus FO+, AAD e MCE.</div>'}
   </div>`;
@@ -955,6 +1048,7 @@ async function carregarTurma() {
   T.trocas = await tentar(nuvem.minhasTrocas, T.trocas);
   T.carregado = true; T.carregando = false;
   aplicarTrocas();
+  aplicarAltsQts();
   atualizarBadge();
   if (ui.vista === 'turma' || ui.vista === 'painel') renderizar();
 }
@@ -1036,8 +1130,8 @@ function renderTurma() {
     <div class="secao"><h2 class="lbl">Escalas da turma</h2>
       ${escalante ? '<button class="btn ouro" type="button" data-acao="publicar-escala">Publicar escala (PDF) para a turma</button>' : ''}
       ${T.escalas.length ? T.escalas.map((e) => `<div class="cartao-n"><h3>${esc(e.titulo)}</h3>
-        <span class="meta">${{ interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação', qts: 'QTS' }[e.tipo] || 'Escala'} · ${e.linhas?.length || 0} linhas · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
-        <div class="linha"><button class="btn pri" type="button" data-escala="${esc(e.id)}">Ver meus serviços</button>${admin || e.publicadoPor === ui.conta.email ? `<button class="btn link dir" type="button" data-escala-rm="${esc(e.id)}">Apagar</button>` : ''}</div></div>`).join('')
+        <span class="meta">${{ interna: 'Serviço Interno', rotina: 'Missões de Rotina', desfile: 'Desfile', representacao: 'Representação', qts: 'QTS', 'qts-alt': 'Alteração do QTS' }[e.tipo] || 'Escala'}${e.tipo === 'qts-alt' ? ` · ${esc(e.linhas?.[0]?.qtsTurma || '')}` : ` · ${e.linhas?.length || 0} linhas`} · publicada ${esc(rotuloDia(e.criadoEm).toLowerCase())}</span>
+        <div class="linha">${e.tipo === 'qts-alt' ? `<button class="btn" type="button" data-ir="qts">Ver no QTS</button>` : `<button class="btn pri" type="button" data-escala="${esc(e.id)}">Ver meus serviços</button>`}${admin || e.publicadoPor === ui.conta.email ? `<button class="btn link dir" type="button" data-escala-rm="${esc(e.id)}">Apagar</button>` : ''}</div></div>`).join('')
         : `<div class="vazio">Nenhuma escala publicada.${escalante ? '' : ' Enquanto isso, importe o PDF pelo botão dourado.'}</div>`}
     </div>
     <button class="btn link" type="button" data-acao="turma-atualizar">Atualizar</button>
@@ -1676,6 +1770,7 @@ $('#importar-corpo').addEventListener('click', async (e) => {
     const novas = guardarSemana(store.get().config.qts, imp.qts);
     store.setConfig({ qts: novas });
     const mantidas = novas.find((x) => x.id === imp.qts.id)?.mantidas || 0;
+    setTimeout(aplicarAltsQts, 300);
     fecharFolha('#dlg-importar'); vibrar(25);
     ui.qts = { dia: ymdL(Math.max(Date.now(), new Date(imp.qts.dias[0].data + 'T00:00').getTime())), modo: 'dia' };
     ui.vista = 'qts'; renderizar(); toast(`QTS da semana ${imp.qts.semana} salvo${mantidas ? ` · ${mantidas} alteração(ões) sua(s) mantida(s)` : ''}`);
@@ -1969,6 +2064,7 @@ document.addEventListener('click', async (e) => {
     case 'td-eu': ui.todos.busca = store.get().config.nomeGuerra || store.get().config.nomeCompleto || ''; renderizar(); break;
     case 'td-apagar': apagarDoc(ui.conta?.uid, ui.todos.doc); if (temNuvem()) nuvem.agendarSincronizacao(); ui.todos.doc = ''; toast('Documento apagado do aparelho'); renderizar(); break;
     case 'revista-pronta': { const r = revistaDoDia(store.get().config, Date.now()); store.setConfig({ revistaHoje: { data: r.dia, ok: r.itens.map((_, i) => i), feita: true } }); vibrar(25); toast('Revista pronta. Bom dia!'); break; }
+    case 'lc-salvar': store.setConfig({ licenca: { ativo: $('#lc-ativo').checked, saidaDia: +$('#lc-sdia').value, saidaHora: $('#lc-shora').value || '18:00', retornoDia: +$('#lc-rdia').value, retornoHora: $('#lc-rhora').value || '19:00' } }); toast('Licença salva'); break;
     case 'rs-salvar': store.setConfig({ resumo: { ativo: $('#rs-ativo').checked, hora: $('#rs-hora').value || '21:00' } }); toast('Resumo da noite salvo'); break;
     case 'rv-add': { const v = $('#rv-novo').value.trim(); if (!v) break; const r = configRevista(store.get().config); store.setConfig({ revista: { ...(store.get().config.revista || {}), itens: [...r.itens, v] } }); break; }
     case 'rv-padrao': { const { itens, ...resto } = store.get().config.revista || {}; store.setConfig({ revista: resto }); toast('Itens padrão restaurados'); break; }
@@ -2141,7 +2237,7 @@ async function verificarLembretes() {
   }
   // revista, geladeira (não vêm de missões)
   const { avisados } = store.get();
-  for (const x of [...lembretesExtras(store.get().config, agora - 6 * 3600000, agora), ...lembretesResumo(agora - 3 * 3600000, agora)]) {
+  for (const x of [...lembretesExtras(store.get().config, agora - 6 * 3600000, agora), ...lembretesResumo(agora - 3 * 3600000, agora), ...lembretesLicenca(agora - 3 * 3600000, agora)]) {
     if (avisados[x.tag]) continue;
     let mostrou = false;
     if ('Notification' in window && Notification.permission === 'granted') {
@@ -2194,7 +2290,9 @@ function resumoDoDia(diaYmd) {
   const alimentos = (cfg.geladeira || []).filter((a) => a.validade <= diaYmd).map((a) => a.item);
   const pendencias = itens.filter((i) => i.origem === 'missao').map((i) => { const m = store.get().missoes.find((x) => x.id === i.id); const f = (m?.checklist || []).filter((c) => !c.ok); return f.length ? `Separou para ${i.titulo}? Falta: ${f.slice(0, 3).map((c) => c.t).join(', ')}${f.length > 3 ? '…' : ''}.` : ''; }).filter(Boolean);
   const dt = new Date(d0);
-  return textoResumo({ rotuloDia: `Amanhã (${DIAS_CURTOS[dt.getDay()].toLowerCase()} ${ddmm(d0)})`, itens: itens.map((i) => ({ titulo: i.titulo, hora: i.diaTodo ? '' : hhmm(i.inicio), local: i.local })), aulas, revista, alimentos, pendencias });
+  const fd = fardaDoDia(d0);
+  const farda = `Farda: ${fd.farda.replace('Fardamento orgânico', 'orgânico')} · DAG: ${fd.dag.toLowerCase()}${fd.extras.length ? ' · ' + fd.extras.map((x) => x.texto).join(' · ') : ''}`;
+  return textoResumo({ rotuloDia: `Amanhã (${DIAS_CURTOS[dt.getDay()].toLowerCase()} ${ddmm(d0)})`, itens: itens.map((i) => ({ titulo: i.titulo, hora: i.diaTodo ? '' : hhmm(i.inicio), local: i.local })), aulas, revista, alimentos, pendencias, farda: aulas.length || itens.length ? farda : '' });
 }
 function lembretesResumo(de, ate) {
   const r = store.get().config.resumo || {};
@@ -2213,6 +2311,7 @@ function lembretesResumo(de, ate) {
 /** Abre o que o aviso indica: missão, plantão, revista (painel) ou geladeira (Rotina). */
 function abrirChave(k) {
   if (k === 'revista') { ui.vista = 'painel'; ui.diaPainel = inicioDoDia(Date.now()); renderizar(); return; }
+  if (k === 'licenca') { ui.vista = 'painel'; ui.diaPainel = inicioDoDia(Date.now()); renderizar(); return; }
   if (k === 'resumo') { ui.vista = 'painel'; ui.diaPainel = somaDias(inicioDoDia(Date.now()), 1); renderizar(); return; }
   if (k === 'geladeira') { ui.vista = 'missoes'; ui.mis.status = 'rotina'; renderizar(); return; }
   ui.vista = 'painel'; renderizar();
@@ -2233,6 +2332,7 @@ function proximosLembretes() {
   }
   for (const x of lembretesExtras(store.get().config, agora + 60000, ate)) out.push(x);
   for (const x of lembretesResumo(agora + 60000, ate)) out.push(x);
+  for (const x of lembretesLicenca(agora + 60000, ate)) out.push(x);
   return out.sort((a, b) => a.dispara - b.dispara);
 }
 
@@ -2271,7 +2371,7 @@ async function iniciarApp(conta) {
   setInterval(tique, 1000);
   verificarLembretes();
   pedirArmazenamentoPersistente();
-  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); if (['revista', 'geladeira', 'resumo'].includes(abrirAoIniciar) || acharItem(abrirAoIniciar)) abrirChave(abrirAoIniciar); }
+  if (abrirAoIniciar) { history.replaceState(null, '', location.pathname); if (['revista', 'geladeira', 'resumo', 'licenca'].includes(abrirAoIniciar) || acharItem(abrirAoIniciar)) abrirChave(abrirAoIniciar); }
   aplicarRelatorios();
   abrirPdfCompartilhado();
   if (temNuvem()) {

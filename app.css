@@ -429,3 +429,13 @@ small.alterado { color: var(--p-importante); font-weight: 700; }
 .eq-aula.sel { background: var(--navy); color: var(--on-navy); border-color: var(--navy); }
 .eq-aula.sel small { color: inherit; opacity: .8; }
 .eq-aula.mudou { border-color: var(--p-importante); border-style: dashed; }
+
+/* fardamento, licença, MCE */
+.farda { display: grid; gap: 4px; padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); }
+.farda > div { display: grid; }
+.farda span:not(.lbl), .farda small { color: var(--muted); font-size: .88rem; }
+.licenca { display: grid; gap: 3px; padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); border-left: 5px solid var(--ok); }
+.licenca.presa { border-left-color: var(--p-importante); }
+.licenca small { color: var(--muted); }
+.mce-st { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.chip.feito { background: var(--ok); color: #fff; border-color: var(--ok); }
