@@ -120,16 +120,22 @@ service cloud.firestore {
     // ================= Portão APMG (repositório portao-apmg) =================
     // Este bloco fica DENTRO de "match /databases/{database}/documents { ... }"
     // do firestore.rules da Agenda (mesmo projeto Firebase), antes do bloqueio final.
-    // Usa as funções logado(), meuEmail(), admin(), eu() e so() que já existem lá.
+    // Usa as funções logado(), meuEmail(), admin(), eu(), so() e mudou() que já existem lá.
+    // Contas criadas pelo administrador dentro do app (criadoPeloAdmin) entram sem
+    // confirmar o e-mail; as demais precisam ter o e-mail confirmado.
     // Papéis: sentinela (consulta e registra) e gestor (também edita cadastro,
     // agendados e lista de alerta). O administrador é o mesmo e-mail da Agenda.
     function portaoConta() {
       return get(/databases/$(database)/documents/portaoAcessos/$(meuEmail())).data;
     }
+    function portaoAuth() {
+      return request.auth != null && request.auth.token.email is string;
+    }
     function portaoLiberado() {
-      return admin() || (logado()
+      return admin() || (portaoAuth()
         && exists(/databases/$(database)/documents/portaoAcessos/$(meuEmail()))
-        && portaoConta().ativo == true);
+        && portaoConta().ativo == true
+        && (request.auth.token.email_verified == true || portaoConta().get('criadoPeloAdmin', false) == true));
     }
     function portaoGestor() {
       return admin() || (portaoLiberado() && portaoConta().get('papel', '') == 'gestor');
@@ -141,7 +147,7 @@ service cloud.firestore {
 
     // Contas do Portão: cada pessoa lê só a própria; só o admin libera e define o papel.
     match /portaoAcessos/{email} {
-      allow get: if admin() || eu(email);
+      allow get: if admin() || (portaoAuth() && meuEmail() == email);
       allow list, write: if admin();
     }
     // Pedidos de acesso ao Portão: criados pela própria pessoa ao entrar.
@@ -166,6 +172,13 @@ service cloud.firestore {
         && request.resource.data.ts is number
         && request.resource.data.tipo in ['entrada', 'saida'];
       allow delete: if portaoGestor();
+    }
+    // Viaturas da APMG: gestor cadastra; a sentinela só atualiza KM e situação (saída/retorno).
+    match /portaoViaturas/{id} {
+      allow read: if portaoLiberado();
+      allow write: if portaoGestor();
+      allow update: if portaoLiberado()
+        && mudou(['kmAtual', 'kmSaida', 'fora', 'foraDesde', 'motoristaAtual', 'destinoAtual', 'atualizadoEm']);
     }
     // Lista de alerta e agendados: gestor edita; sentinelas consultam.
     match /portaoAlertas/{placa} {
