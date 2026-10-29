@@ -117,6 +117,67 @@ service cloud.firestore {
       allow read: if admin();
     }
 
+    // ================= Portão APMG (repositório portao-apmg) =================
+    // Este bloco fica DENTRO de "match /databases/{database}/documents { ... }"
+    // do firestore.rules da Agenda (mesmo projeto Firebase), antes do bloqueio final.
+    // Usa as funções logado(), meuEmail(), admin(), eu() e so() que já existem lá.
+    // Papéis: sentinela (consulta e registra) e gestor (também edita cadastro,
+    // agendados e lista de alerta). O administrador é o mesmo e-mail da Agenda.
+    function portaoConta() {
+      return get(/databases/$(database)/documents/portaoAcessos/$(meuEmail())).data;
+    }
+    function portaoLiberado() {
+      return admin() || (logado()
+        && exists(/databases/$(database)/documents/portaoAcessos/$(meuEmail()))
+        && portaoConta().ativo == true);
+    }
+    function portaoGestor() {
+      return admin() || (portaoLiberado() && portaoConta().get('papel', '') == 'gestor');
+    }
+    function portaoFotoOk(max) {
+      return request.resource.data.get('foto', null) == null
+        || (request.resource.data.foto is string && request.resource.data.foto.size() < max);
+    }
+
+    // Contas do Portão: cada pessoa lê só a própria; só o admin libera e define o papel.
+    match /portaoAcessos/{email} {
+      allow get: if admin() || eu(email);
+      allow list, write: if admin();
+    }
+    // Pedidos de acesso ao Portão: criados pela própria pessoa ao entrar.
+    match /portaoPedidos/{email} {
+      allow create: if eu(email) && so(['email', 'criadoEm']) && request.resource.data.email == email;
+      allow get: if admin() || eu(email);
+      allow list, delete: if admin();
+    }
+    // Veículos autorizados: gestor edita; sentinela só cria/renova "Visitante" (visitante rápido).
+    match /portaoVeiculos/{placa} {
+      allow read: if portaoLiberado();
+      allow create, update: if portaoFotoOk(400000) && (portaoGestor()
+        || (portaoLiberado() && request.resource.data.get('vinculo', '') == 'Visitante'
+            && (resource == null || resource.data.get('vinculo', '') == 'Visitante')));
+      allow delete: if portaoGestor();
+    }
+    // Livro de entradas e saídas: todo liberado registra em nome próprio; ninguém edita.
+    match /portaoRegistros/{id} {
+      allow read: if portaoLiberado();
+      allow create: if portaoLiberado() && portaoFotoOk(300000)
+        && request.resource.data.por == meuEmail()
+        && request.resource.data.ts is number
+        && request.resource.data.tipo in ['entrada', 'saida'];
+      allow delete: if portaoGestor();
+    }
+    // Lista de alerta e agendados: gestor edita; sentinelas consultam.
+    match /portaoAlertas/{placa} {
+      allow read: if portaoLiberado();
+      allow write: if portaoGestor();
+    }
+    match /portaoAgendados/{id} {
+      allow read: if portaoLiberado();
+      allow write: if portaoGestor();
+    }
+    // ================= fim do Portão APMG =================
+
     // Qualquer outro caminho: bloqueado.
     match /{documento=**} {
       allow read, write: if false;
