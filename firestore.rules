@@ -140,6 +140,10 @@ service cloud.firestore {
     function portaoGestor() {
       return admin() || (portaoLiberado() && portaoConta().get('papel', '') == 'gestor');
     }
+    // "comando" só consulta (painel e relatórios); não registra.
+    function portaoRegistra() {
+      return admin() || (portaoLiberado() && portaoConta().get('papel', '') != 'comando');
+    }
     function portaoFotoOk(max) {
       return request.resource.data.get('foto', null) == null
         || (request.resource.data.foto is string && request.resource.data.foto.size() < max);
@@ -161,24 +165,26 @@ service cloud.firestore {
       allow read: if portaoLiberado();
       allow create, update: if portaoFotoOk(400000) && (portaoGestor()
         || (portaoLiberado() && request.resource.data.get('vinculo', '') == 'Visitante'
-            && (resource == null || resource.data.get('vinculo', '') == 'Visitante')));
+            && (resource == null || resource.data.get('vinculo', '') == 'Visitante')
+            && portaoRegistra()));
       allow delete: if portaoGestor();
     }
     // Livro de entradas e saídas: todo liberado registra em nome próprio; ninguém edita.
     match /portaoRegistros/{id} {
       allow read: if portaoLiberado();
-      allow create: if portaoLiberado() && portaoFotoOk(300000)
+      allow create: if portaoRegistra() && portaoFotoOk(300000)
+        && request.resource.data.get('fotos', []).size() <= 3
         && request.resource.data.por == meuEmail()
         && request.resource.data.ts is number
-        && request.resource.data.tipo in ['entrada', 'saida'];
+        && request.resource.data.tipo in ['entrada', 'saida', 'ocorrencia', 'ronda'];
       allow delete: if portaoGestor();
     }
     // Viaturas da APMG: gestor cadastra; a sentinela só atualiza KM e situação (saída/retorno).
     match /portaoViaturas/{id} {
       allow read: if portaoLiberado();
       allow write: if portaoGestor();
-      allow update: if portaoLiberado()
-        && mudou(['kmAtual', 'kmSaida', 'fora', 'foraDesde', 'motoristaAtual', 'destinoAtual', 'atualizadoEm']);
+      allow update: if portaoRegistra()
+        && mudou(['kmAtual', 'kmSaida', 'fora', 'foraDesde', 'motoristaAtual', 'destinoAtual', 'combSaida', 'faltandoSaida', 'ultimoCheck', 'atualizadoEm']);
     }
     // Lista de alerta e agendados: gestor edita; sentinelas consultam.
     match /portaoAlertas/{placa} {
@@ -186,6 +192,15 @@ service cloud.firestore {
       allow write: if portaoGestor();
     }
     match /portaoAgendados/{id} {
+      allow read: if portaoLiberado();
+      allow write: if portaoGestor();
+    }
+    // Pontos de ronda (QR) e configuração do posto (vagas, intervalo de ronda): gestor edita.
+    match /portaoPontos/{id} {
+      allow read: if portaoLiberado();
+      allow write: if portaoGestor();
+    }
+    match /portaoConfig/{id} {
       allow read: if portaoLiberado();
       allow write: if portaoGestor();
     }
