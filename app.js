@@ -663,6 +663,16 @@ function renderPainel(agora) {
 
   const avisos = [];
   if (!store.get().config.nome) avisos.push(`<div class="aviso"><p>Coloque seu nome para aparecer no topo do app.</p><button class="btn" type="button" data-ir="ajustes">Pôr meu nome</button></div>`);
+  const iosNav = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (iosNav && !(matchMedia('(display-mode: standalone)').matches || navigator.standalone) && !store.get().config.iosDicaFechada) {
+    const safari = !/crios|fxios|edgios|opios|gsa\//i.test(navigator.userAgent);
+    avisos.push(`<div class="aviso ios-inst"><p><b>Instalar no iPhone</b></p>
+      <ol>${safari ? '' : '<li>Abra este endereço no <b>Safari</b> (no iOS 16.4 ou mais novo também dá pelo Chrome, no botão Compartilhar da barra de endereço).</li>'}
+        <li>Toque em <b>Compartilhar</b> <span aria-hidden="true">⬆︎</span> (na barra de baixo; no iOS 26, toque antes em <b>⋯</b>).</li>
+        <li>Role e escolha <b>Adicionar à Tela de Início</b>, deixe <i>Abrir como App</i> ligado e toque em <b>Adicionar</b>.</li></ol>
+      <small>O iPhone não mostra o botão "Instalar" automático; é só por esse menu. Depois de instalado, abra pelo ícone para receber avisos.</small>
+      <button class="btn" type="button" data-acao="ios-fechar">Já instalei / ocultar</button></div>`);
+  }
   if (ui.instalar) avisos.push(`<div class="aviso"><p>Instale o app na tela inicial para abrir como aplicativo e usar offline.</p><button class="btn ouro" type="button" data-acao="instalar">Instalar</button></div>`);
   if ('Notification' in window && Notification.permission === 'default' && store.get().missoes.length + store.get().ciclos.length > 0)
     avisos.push(`<div class="aviso"><p>Ative os avisos para receber lembretes enquanto o app estiver aberto.</p><button class="btn" type="button" data-acao="notificar">Ativar avisos</button></div>`);
@@ -2375,6 +2385,7 @@ document.addEventListener('click', async (e) => {
       break;
     }
     case 'notificar': await pedirAvisos(); break;
+    case 'ios-fechar': store.setConfig({ iosDicaFechada: true }); break;
     case 'instalar': if (ui.instalar) { ui.instalar.prompt(); await ui.instalar.userChoice.catch(() => {}); ui.instalar = null; renderizar(); } break;
     case 'backup': baixar(`agenda-cadete-backup-${paraData(Date.now())}.json`, store.exportar(), 'application/json'); toast('Backup baixado'); break;
     case 'ics-tudo': {
