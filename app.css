@@ -460,3 +460,8 @@ b.alerta { color: var(--p-importante); }
 .quartos-prev .func.quarto { padding: 6px 10px; border-radius: 10px; background: var(--surface-2, rgba(127,127,127,.08)); }
 .quartos-prev .func.quarto small { font-variant-numeric: tabular-nums; opacity: .85; }
 #iq-texto { width: 100%; font: inherit; font-size: .9rem; resize: vertical; }
+
+/* aulas do QTS na linha do tempo */
+.tl-aulas { gap: 6px; }
+.tl-aulas .aula-mini.feita { opacity: .5; }
+.tl-aulas .aula-mini.agora b { color: var(--gold); }

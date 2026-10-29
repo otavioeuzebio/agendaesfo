@@ -17,7 +17,7 @@ import { store } from './store.js';
 import { listarDocs, removidosDocs, gravarDocs, mesclarDocs } from './documentos.js';
 import { chaveDaConta, guardarChaveDaSenha, cifrar, decifrar, novoPar, guardarPar, lerPar, chaveComum } from './cripto.js';
 
-export const VERSAO_APP = '2.12.0';
+export const VERSAO_APP = '2.12.1';
 let conta = null; // { uid, email, admin, papel }
 const ouvintes = new Set();
 const status = { cofre: 'desligado', ultimaSinc: 0, erro: '', push: 'desligado' };

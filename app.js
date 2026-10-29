@@ -416,6 +416,21 @@ function rotuloQuando(dataYmd, hhmmTxt, agora) {
   return `${rotuloDia(d, agora).toLowerCase()} às ${hhmmTxt}`;
 }
 /** Aula agora / próxima no painel. */
+/** Aulas do QTS no dia (blocos já juntados), para a linha do tempo. */
+function aulasDoDia(dia) {
+  const sems = store.get().config.qts || [];
+  const data = ymdL(dia.getTime());
+  const sem = semanaDoDia(sems, data);
+  const d = sem?.dias.find((x) => x.data === data);
+  if (!d) return [];
+  return blocosDoDia(d.aulas).filter((b) => b.sigla && !ehIndisponivel(b.sigla))
+    .map((b) => ({ ...b, semana: sem, data, iniMs: new Date(`${data}T${b.ini}:00`).getTime(), fimMs: new Date(`${data}T${b.fim}:00`).getTime() }));
+}
+function cartaoAulasTl(aulas, agora) {
+  return `<button type="button" class="cartao-aula tl-aulas" data-acao="tl-qts" data-dia="${aulas[0].data}"><span class="lbl">Aulas · QTS</span>
+    ${aulas.map((b) => { const st = agora >= b.fimMs ? 'feita' : agora >= b.iniMs ? 'agora' : '';
+      return `<div class="aula-mini ${st}" style="--cor:${corSigla(b.sigla)}"><span class="sig">${esc(b.sigla)}</span><span><b>${b.ini}–${b.fim}</b> ${esc(capitaliza(nomeDisc(b.semana, b.sigla)) || b.sigla)}${st === 'agora' ? ' · agora' : ''}${b.alterada ? ' · alterada' : ''}<small>${esc([b.local, b.instrutor].filter(Boolean).join(' · '))}</small></span></div>`; }).join('')}</button>`;
+}
 function cartaoAula(agora) {
   const sems = store.get().config.qts || [];
   if (!sems.length || !mesmoDia(ui.diaPainel, inicioDoDia(agora))) return '';
@@ -664,17 +679,21 @@ function renderPainel(agora) {
   if (alertaGel.length) avisos.push(`<div class="aviso gel"><p><b>Geladeira:</b> ${alertaGel.slice(0, 3).map((a) => `${esc(a.item)} · ${ROTULO_ALIMENTO[a.estado].toLowerCase()}`).join('; ')}${alertaGel.length > 3 ? '…' : ''}</p><button class="btn" type="button" data-ir-rotina>Ver geladeira</button></div>`);
   if (store.falhouGravar()) avisos.push(`<div class="aviso" style="border-color:var(--danger)"><p>O navegador recusou salvar os dados. Libere espaço ou saia da navegação anônima e faça um backup em Ajustes.</p></div>`);
 
-  // linha do tempo
+  // linha do tempo (missões + aulas do QTS)
   const porBloco = {};
   for (const it of doDia) (porBloco[blocoDe(it.inicio, it.diaTodo, dia)] ||= []).push(it);
-  const linha = doDia.length
+  const aulas = aulasDoDia(dia);
+  const aulasPorBloco = {};
+  for (const a of aulas) (aulasPorBloco[blocoDe(a.iniMs, false, dia)] ||= []).push(a);
+  const linha = doDia.length || aulas.length
     ? BLOCOS.filter((b) => b.id !== 'diaTodo' || porBloco.diaTodo).map((b) => {
-        const itens = porBloco[b.id] || [];
-        return `<div class="bloco"><div class="trilho"><i class="${itens.length ? 'on' : ''}"></i><u></u></div>
-          <div class="bloco-c"><div class="bloco-h"><span class="lbl">${b.rotulo}</span>${b.faixa ? `<small>${b.faixa}</small>` : ''}${itens.length ? '' : '<small>· Livre</small>'}</div>
-          ${itens.map((i) => cartao(i, agora)).join('')}</div></div>`;
+        const itens = porBloco[b.id] || [], au = aulasPorBloco[b.id] || [];
+        const cards = [...itens.map((i) => ({ t: i.diaTodo ? -1 : i.inicio, h: cartao(i, agora) })), ...(au.length ? [{ t: au[0].iniMs, h: cartaoAulasTl(au, agora) }] : [])].sort((x, y) => x.t - y.t);
+        return `<div class="bloco"><div class="trilho"><i class="${cards.length ? 'on' : ''}"></i><u></u></div>
+          <div class="bloco-c"><div class="bloco-h"><span class="lbl">${b.rotulo}</span>${b.faixa ? `<small>${b.faixa}</small>` : ''}${cards.length ? '' : '<small>· Livre</small>'}</div>
+          ${cards.map((c) => c.h).join('')}</div></div>`;
       }).join('')
-    : `<div class="vazio">Nenhuma missão ${mesmoDia(dia, hoje) ? 'hoje' : 'neste dia'}. Toque no botão dourado para lançar.</div>`;
+    : `<div class="vazio">Nenhuma missão ${mesmoDia(dia, hoje) ? 'hoje' : 'neste dia'}${(store.get().config.qts || []).length ? '' : ' (e nenhum QTS importado)'}. Toque no botão dourado para lançar.</div>`;
 
   const servicos = emServicoAgora(agora);
   $('#v-painel').innerHTML = `<div class="secao" style="gap:18px">
@@ -2270,6 +2289,7 @@ document.addEventListener('click', async (e) => {
       ui.editLicenca = null; store.setConfig({ licenca: { ...lic, excecoes: ex } });
       toast(ac.dataset.acao === 'lx-padrao' ? 'Licença voltou ao padrão' : 'Licença deste fim de semana alterada'); break;
     }
+    case 'tl-qts': ui.qts = { dia: ac.dataset.dia, modo: 'dia' }; ui.vista = 'qts'; renderizar(); window.scrollTo(0, 0); break;
     case 'fc-salvar': store.setConfig({ formatura: { data: $('#fc-fim').value || FIM_CURSO_PADRAO, inicio: $('#fc-ini').value || '', ocultar: !$('#fc-mostrar').checked } }); toast('Fim do curso salvo'); break;
     case 'lc-salvar': store.setConfig({ licenca: { ...(store.get().config.licenca || {}), ativo: $('#lc-ativo').checked, saidaDia: +$('#lc-sdia').value, saidaHora: $('#lc-shora').value || '18:00', retornoDia: +$('#lc-rdia').value, retornoHora: $('#lc-rhora').value || '19:00' } }); toast('Licença salva'); break;
     case 'rs-salvar': store.setConfig({ resumo: { ativo: $('#rs-ativo').checked, hora: $('#rs-hora').value || '21:00' } }); toast('Resumo da noite salvo'); break;
